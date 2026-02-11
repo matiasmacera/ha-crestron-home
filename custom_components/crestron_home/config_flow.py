@@ -69,7 +69,7 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> CrestronHomeOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return CrestronHomeOptionsFlowHandler(config_entry)
+        return CrestronHomeOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
