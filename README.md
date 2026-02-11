@@ -264,7 +264,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   - Session management with login lock to prevent concurrent login attempts
   - Entity registry cleanup when device types are disabled
   - Options flow for reconfiguration without re-adding the integration
-- **CI/CD**: Auto-merge GitHub Action for streamlined development workflow
 
 ### v0.2.0
 - **Thermostat Support**: Added climate platform with temperature control, fan modes, and HVAC modes
