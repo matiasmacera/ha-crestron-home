@@ -206,11 +206,12 @@ class CrestronDeviceManager:
             
             _LOGGER.warning("CRESTRON POLL: devices_by_type thermostat count = %d, total self.devices = %d", 
                            len(devices_by_type.get(DEVICE_TYPE_THERMOSTAT, [])), len(self.devices))
-            # Log thermostat device types for debugging
-            for dev in self.devices.values():
-                if dev.type == "Thermostat" or dev.subtype == "Thermostat":
-                    _LOGGER.warning("CRESTRON POLL: Found tstat in self.devices: id=%s type='%s' subtype='%s' ha_type='%s'",
-                                   dev.id, dev.type, dev.subtype, self._get_ha_device_type(dev.type, dev.subtype))
+            # Log ALL devices that have Thermostat in type or subtype
+            for dev_id, dev in self.devices.items():
+                if "hermostat" in str(dev.type) or "hermostat" in str(dev.subtype):
+                    ha_type = self._get_ha_device_type(dev.type, dev.subtype)
+                    _LOGGER.warning("CRESTRON POLL: tstat device id=%s type='%s' subtype='%s' -> ha_type='%s'",
+                                   dev_id, dev.type, dev.subtype, ha_type)
             
             # Log detailed device information if debug mode is enabled
             if DEBUG_MODE:
@@ -407,6 +408,9 @@ class CrestronDeviceManager:
 
                 if tstat_id in self.devices:
                     # Update existing thermostat
+                    existing = self.devices[tstat_id]
+                    _LOGGER.warning("CRESTRON TSTAT: id=%s already exists as type='%s' subtype='%s', overwriting to Thermostat", 
+                                   tstat_id, existing.type, existing.subtype)
                     device = self.devices[tstat_id]
                     device.type = "Thermostat"
                     device.subtype = "Thermostat"
