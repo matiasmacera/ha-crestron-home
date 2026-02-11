@@ -20,8 +20,10 @@ from .const import (
     CONF_IGNORED_DEVICE_NAMES,
     CONF_TOKEN,
     CONF_UPDATE_INTERVAL,
+    CONF_VERIFY_SSL,
     DEFAULT_IGNORED_DEVICE_NAMES,
     DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_VERIFY_SSL,
     DEVICE_TYPE_BINARY_SENSOR,
     DEVICE_TYPE_LIGHT,
     DEVICE_TYPE_SCENE,
@@ -50,11 +52,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     update_interval = entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
     enabled_device_types = entry.data.get(CONF_ENABLED_DEVICE_TYPES, [])
     ignored_device_names = entry.data.get(CONF_IGNORED_DEVICE_NAMES, DEFAULT_IGNORED_DEVICE_NAMES)
-    
+    verify_ssl = entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
+
     _LOGGER.debug("Ignored device name patterns: %s", ignored_device_names)
 
     # Create API client
-    client = CrestronClient(hass, host, token)
+    client = CrestronClient(hass, host, token, verify_ssl=verify_ssl)
 
     # Create coordinator with current configuration values
     _LOGGER.debug(
@@ -164,10 +167,7 @@ async def _async_clean_entity_registry(
                         if device_type in domain_mapping]
     
     _LOGGER.debug("Cleaning up entities for domains: %s", domains_to_clean)
-    
-    # Find entities for this config entry
-    entity_entries = async_get_entity_registry(hass).entities.values()
-    
+
     # Get entities to remove (those belonging to this config entry and disabled domains)
     entities_to_remove = [
         entity_id for entity_id, entity in entity_registry.entities.items()

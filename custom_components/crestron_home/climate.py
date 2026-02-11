@@ -153,10 +153,10 @@ async def async_setup_entry(
         """Add thermostat entities from coordinator data."""
         thermostats = []
 
-        thermostat_devices = coordinator.data.get(DEVICE_TYPE_THERMOSTAT, [])
+        thermostat_devices = coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {})
         _LOGGER.debug("CLIMATE SETUP: Found %d thermostat devices", len(thermostat_devices))
 
-        for device in thermostat_devices:
+        for device in thermostat_devices.values():
             device_id = str(device.id)
             if device_id in added_ids:
                 continue
@@ -276,11 +276,9 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
     # -- State properties (read from coordinator) --
 
     def _get_device(self) -> CrestronDevice:
-        """Get the latest device data from coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
-            if device.id == self._device.id:
-                return device
-        return self._device
+        """Get the latest device data from coordinator via O(1) dict lookup."""
+        device = self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {}).get(self._device.id)
+        return device if device is not None else self._device
 
     @property
     def available(self) -> bool:
@@ -309,27 +307,46 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        """Infer current HVAC action from mode + temps."""
+        """Infer current HVAC action from mode + temps.
+
+        Uses the API's 'running' field if available, otherwise infers
+        from mode and temperature comparison with a small deadband to
+        avoid rapid toggling between IDLE and HEATING/COOLING.
+        """
         device = self._get_device()
         mode_str = _get_mode_str(device.raw_data)
 
         if mode_str.lower() == "off":
             return HVACAction.OFF
 
+        # Use explicit running state from API if available
+        running = device.raw_data.get("running")
+        if running is not None:
+            if isinstance(running, str):
+                running_lower = running.lower()
+                if running_lower == "cooling":
+                    return HVACAction.COOLING
+                if running_lower == "heating":
+                    return HVACAction.HEATING
+                if running_lower in ("idle", "off"):
+                    return HVACAction.IDLE
+
         current = device.raw_data.get("currentTemperature")
         target = _get_target_temp_raw(device.raw_data)
         if current is None or target is None:
             return HVACAction.IDLE
 
+        # Deadband of 0.5 deci-degrees (0.05 real degrees) to avoid toggling
+        deadband = 5
         mode_lower = mode_str.lower()
-        if mode_lower == "cool" and current > target:
+        if mode_lower == "cool" and current > target + deadband:
             return HVACAction.COOLING
-        if mode_lower == "heat" and current < target:
+        if mode_lower == "heat" and current < target - deadband:
             return HVACAction.HEATING
         if mode_lower == "auto":
-            if current > target:
+            if current > target + deadband:
                 return HVACAction.COOLING
-            if current < target:
+            if current < target - deadband:
                 return HVACAction.HEATING
         return HVACAction.IDLE
 
@@ -413,9 +430,8 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
-            if device.id == self._device.id:
-                self._device = device
-                self._device_info = device
-                break
+        device = self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {}).get(self._device.id)
+        if device is not None:
+            self._device = device
+            self._device_info = device
         self.async_write_ha_state()

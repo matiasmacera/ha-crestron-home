@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    API_TIMEOUT,
     CRESTRON_API_PATH,
     CRESTRON_MAX_LEVEL,
     CRESTRON_SESSION_TIMEOUT,
@@ -37,7 +38,7 @@ class CrestronClient:
     """API Client for Crestron Home."""
 
     def __init__(
-        self, hass: HomeAssistant, host: str, token: str
+        self, hass: HomeAssistant, host: str, token: str, verify_ssl: bool = False
     ) -> None:
         """Initialize the API client."""
         self.hass = hass
@@ -47,20 +48,25 @@ class CrestronClient:
         self.auth_key: Optional[str] = None
         self.last_login: float = 0
         self.rooms: List[Dict[str, Any]] = []
-        self._session = async_get_clientsession(hass, verify_ssl=False)
+        self._verify_ssl = verify_ssl
+        self._session = async_get_clientsession(hass, verify_ssl=verify_ssl)
         self._ssl_context = None
-        
+        self._timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
+
         # Add a lock for login to prevent multiple simultaneous login attempts
         self._login_lock = asyncio.Lock()
 
     async def _create_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context in executor to avoid blocking the event loop."""
+        verify_ssl = self._verify_ssl
         def _create_context():
+            if verify_ssl:
+                return ssl.create_default_context()
             context = ssl.create_default_context()
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             return context
-            
+
         return await self.hass.async_add_executor_job(_create_context)
 
     async def login(self) -> None:
@@ -87,12 +93,15 @@ class CrestronClient:
                     self._ssl_context = await self._create_ssl_context()
                 
                 # Make login request
-                async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=self._ssl_context)) as session:
+                async with aiohttp.ClientSession(
+                    connector=aiohttp.TCPConnector(ssl=self._ssl_context),
+                    timeout=self._timeout,
+                ) as session:
                     headers = {
                         "Accept": "application/json",
                         "Crestron-RestAPI-AuthToken": self.api_token,
                     }
-                    
+
                     async with session.get(
                         f"{self.base_url}/login",
                         headers=headers,
@@ -110,14 +119,20 @@ class CrestronClient:
                             data.get("version", "unknown"),
                         )
             
+            except asyncio.TimeoutError as error:
+                _LOGGER.error("Login timed out after %ss", API_TIMEOUT)
+                raise CrestronConnectionError(
+                    f"Login timed out after {API_TIMEOUT}s"
+                ) from error
+
             except ClientConnectorError as error:
                 _LOGGER.error("Connection error: %s", error)
                 raise CrestronConnectionError(f"Connection error: {error}") from error
-            
+
             except ClientResponseError as error:
                 _LOGGER.error("Authentication error: %s", error)
                 raise CrestronAuthError(f"Authentication error: {error}") from error
-            
+
             except Exception as error:
                 _LOGGER.error("Unexpected error during login: %s", error)
                 raise CrestronApiError(f"Unexpected error: {error}") from error
@@ -138,11 +153,17 @@ class CrestronClient:
         
         try:
             async with self._session.request(
-                method, url, headers=headers, json=data
+                method, url, headers=headers, json=data,
+                timeout=self._timeout,
             ) as response:
                 response.raise_for_status()
                 return await response.json()
-        
+
+        except asyncio.TimeoutError as error:
+            raise CrestronConnectionError(
+                f"Request to {endpoint} timed out after {API_TIMEOUT}s"
+            ) from error
+
         except ClientResponseError as error:
             if error.status == 401:
                 # Force re-authentication on next request
@@ -150,7 +171,10 @@ class CrestronClient:
                 self.last_login = 0
                 raise CrestronAuthError("Authentication expired") from error
             raise CrestronApiError(f"API error: {error}") from error
-        
+
+        except CrestronApiError:
+            raise
+
         except Exception as error:
             _LOGGER.error("API request error: %s", error)
             raise CrestronApiError(f"API request error: {error}") from error
@@ -268,9 +292,11 @@ class CrestronClient:
             _LOGGER.info("Found %d devices matching enabled types", len(devices))
             return devices
         
+        except CrestronApiError:
+            raise
         except Exception as error:
             _LOGGER.error("Error getting devices: %s", error)
-            return []
+            raise CrestronApiError(f"Error getting devices: {error}") from error
 
     async def get_device(self, device_id: int) -> Dict[str, Any]:
         """Get a specific device from the Crestron Home system."""
@@ -284,6 +310,7 @@ class CrestronClient:
 
     async def set_light_state(self, light_id: int, level: int, time: int = 0) -> None:
         """Set the state of a light."""
+        level = max(0, min(level, CRESTRON_MAX_LEVEL))
         light_state = {
             "lights": [
                 {
@@ -298,6 +325,7 @@ class CrestronClient:
 
     async def set_shade_position(self, shade_id: int, position: int) -> None:
         """Set the position of a shade."""
+        position = max(0, min(position, CRESTRON_MAX_LEVEL))
         shade_state = {
             "shades": [
                 {

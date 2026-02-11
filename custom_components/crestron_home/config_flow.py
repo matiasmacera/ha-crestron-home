@@ -19,8 +19,10 @@ from .const import (
     CONF_IGNORED_DEVICE_NAMES,
     CONF_TOKEN,
     CONF_UPDATE_INTERVAL,
+    CONF_VERIFY_SSL,
     DEFAULT_IGNORED_DEVICE_NAMES,
     DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_VERIFY_SSL,
     DEVICE_TYPE_BINARY_SENSOR,
     DEVICE_TYPE_LIGHT,
     DEVICE_TYPE_SCENE,
@@ -80,18 +82,19 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
-                
-                # Set default enabled device types if not provided
-                if CONF_ENABLED_DEVICE_TYPES not in user_input:
-                    user_input[CONF_ENABLED_DEVICE_TYPES] = [
-                        DEVICE_TYPE_LIGHT,
-                        DEVICE_TYPE_SHADE,
-                        DEVICE_TYPE_SCENE,
-                        DEVICE_TYPE_BINARY_SENSOR,
-                        DEVICE_TYPE_SENSOR,
-                        DEVICE_TYPE_THERMOSTAT,
-                    ]
-                
+
+                # Ensure enabled_device_types is preserved from user selection
+                # Only set defaults if the key is completely absent (not if user chose empty)
+                user_input.setdefault(CONF_ENABLED_DEVICE_TYPES, [
+                    DEVICE_TYPE_LIGHT,
+                    DEVICE_TYPE_SHADE,
+                    DEVICE_TYPE_SCENE,
+                    DEVICE_TYPE_BINARY_SENSOR,
+                    DEVICE_TYPE_SENSOR,
+                    DEVICE_TYPE_THERMOSTAT,
+                ])
+                user_input.setdefault(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
+
                 return self.async_create_entry(title=info["title"], data=user_input)
             
             except CannotConnect:
@@ -145,6 +148,7 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             suffix="Use % as wildcard (e.g., %bathroom%)",
                         ),
                     ),
+                    vol.Optional(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
                 }
             ),
             errors=errors,
@@ -182,13 +186,21 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
-        # Get current values from config entry
-        current_update_interval = self.config_entry.data.get(
-            CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
-        )
-        current_enabled_types = self.config_entry.data.get(
-            CONF_ENABLED_DEVICE_TYPES, [DEVICE_TYPE_LIGHT, DEVICE_TYPE_SHADE, DEVICE_TYPE_SCENE, DEVICE_TYPE_BINARY_SENSOR, DEVICE_TYPE_SENSOR, DEVICE_TYPE_THERMOSTAT]
-        )
+        # Get current values: prefer options (latest), fallback to data (initial)
+        def _current(key, default=None):
+            return self.config_entry.options.get(
+                key, self.config_entry.data.get(key, default)
+            )
+
+        all_types_default = [
+            DEVICE_TYPE_LIGHT, DEVICE_TYPE_SHADE, DEVICE_TYPE_SCENE,
+            DEVICE_TYPE_BINARY_SENSOR, DEVICE_TYPE_SENSOR, DEVICE_TYPE_THERMOSTAT,
+        ]
+
+        current_update_interval = _current(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        current_enabled_types = _current(CONF_ENABLED_DEVICE_TYPES, all_types_default)
+        current_ignored = _current(CONF_IGNORED_DEVICE_NAMES, DEFAULT_IGNORED_DEVICE_NAMES)
+        current_verify_ssl = _current(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
 
         return self.async_show_form(
             step_id="init",
@@ -220,14 +232,15 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                         ),
                     ),
                     vol.Optional(
-                        CONF_IGNORED_DEVICE_NAMES, 
-                        default=self.config_entry.data.get(CONF_IGNORED_DEVICE_NAMES, DEFAULT_IGNORED_DEVICE_NAMES)
+                        CONF_IGNORED_DEVICE_NAMES,
+                        default=current_ignored,
                     ): selector.TextSelector(
                         selector.TextSelectorConfig(
                             multiple=True,
                             suffix="Use % as wildcard (e.g., %bathroom%)",
                         ),
                     ),
+                    vol.Optional(CONF_VERIFY_SSL, default=current_verify_ssl): bool,
                 }
             ),
             errors=errors,
