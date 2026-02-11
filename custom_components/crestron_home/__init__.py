@@ -112,25 +112,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry, platform_override: list = None) -> bool:
     """Unload a config entry."""
-    # Get enabled platforms
-    enabled_device_types = entry.data.get(CONF_ENABLED_DEVICE_TYPES, [])
-    enabled_platforms = []
-    
-    # Map device types to platforms
-    if DEVICE_TYPE_LIGHT in enabled_device_types:
-        enabled_platforms.append(Platform.LIGHT)
-    if DEVICE_TYPE_SHADE in enabled_device_types:
-        enabled_platforms.append(Platform.COVER)
-    if DEVICE_TYPE_SCENE in enabled_device_types:
-        enabled_platforms.append(Platform.SCENE)
-    if DEVICE_TYPE_BINARY_SENSOR in enabled_device_types:
-        enabled_platforms.append(Platform.BINARY_SENSOR)
-    if DEVICE_TYPE_SENSOR in enabled_device_types:
-        enabled_platforms.append(Platform.SENSOR)
-    if DEVICE_TYPE_THERMOSTAT in enabled_device_types:
-        enabled_platforms.append(Platform.CLIMATE)
+    # Get enabled platforms - use override if provided (for reload scenarios)
+    if platform_override is not None:
+        enabled_platforms = platform_override
+    else:
+        enabled_device_types = entry.data.get(CONF_ENABLED_DEVICE_TYPES, [])
+        enabled_platforms = []
+        
+        # Map device types to platforms
+        if DEVICE_TYPE_LIGHT in enabled_device_types:
+            enabled_platforms.append(Platform.LIGHT)
+        if DEVICE_TYPE_SHADE in enabled_device_types:
+            enabled_platforms.append(Platform.COVER)
+        if DEVICE_TYPE_SCENE in enabled_device_types:
+            enabled_platforms.append(Platform.SCENE)
+        if DEVICE_TYPE_BINARY_SENSOR in enabled_device_types:
+            enabled_platforms.append(Platform.BINARY_SENSOR)
+        if DEVICE_TYPE_SENSOR in enabled_device_types:
+            enabled_platforms.append(Platform.SENSOR)
+        if DEVICE_TYPE_THERMOSTAT in enabled_device_types:
+            enabled_platforms.append(Platform.CLIMATE)
     
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, enabled_platforms):
         hass.data[DOMAIN].pop(entry.entry_id)
@@ -179,11 +182,10 @@ async def _async_clean_entity_registry(
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
-    # Get old and new enabled device types
+    # Get old enabled device types BEFORE updating
     old_enabled_types = set(entry.data.get(CONF_ENABLED_DEVICE_TYPES, []))
     
     # If entry.options is empty, it means this is the first reload after setup
-    # In this case, there's nothing to compare
     if not entry.options:
         await async_unload_entry(hass, entry)
         await async_setup_entry(hass, entry)
@@ -205,14 +207,28 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     if disabled_types:
         await _async_clean_entity_registry(hass, entry, disabled_types)
     
+    # Build the OLD platforms list for unload (only what was actually loaded)
+    old_platforms = []
+    type_to_platform = {
+        DEVICE_TYPE_LIGHT: Platform.LIGHT,
+        DEVICE_TYPE_SHADE: Platform.COVER,
+        DEVICE_TYPE_SCENE: Platform.SCENE,
+        DEVICE_TYPE_BINARY_SENSOR: Platform.BINARY_SENSOR,
+        DEVICE_TYPE_SENSOR: Platform.SENSOR,
+        DEVICE_TYPE_THERMOSTAT: Platform.CLIMATE,
+    }
+    for dt in old_enabled_types:
+        if dt in type_to_platform:
+            old_platforms.append(type_to_platform[dt])
+    
     # Update entry data with new options
     if entry.options:
         hass.config_entries.async_update_entry(
             entry, data={**entry.data, **entry.options}
         )
     
-    # Perform a complete unload
-    if await async_unload_entry(hass, entry):
+    # Perform a complete unload using the OLD platforms
+    if await async_unload_entry(hass, entry, platform_override=old_platforms):
         _LOGGER.debug("Successfully unloaded entry")
     else:
         _LOGGER.warning("Failed to unload entry completely")
