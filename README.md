@@ -4,43 +4,51 @@
 [![GitHub License](https://img.shields.io/github/license/matiasmacera/ha-crestron-home.svg)](LICENSE)
 
 > **Note**: This is a fork of the original [ha-crestron-home](https://github.com/ruudruud/ha-crestron-home) by [@ruudruud](https://github.com/ruudruud).
-> This fork extends the original integration with additional device support, such as **thermostats (climate control)**.
+> This fork extends the original integration with additional device support, improved robustness, and new features.
 > All credit for the original implementation goes to the original author.
 
 This repository contains a custom component for Home Assistant that integrates with Crestron Home systems. It allows you to control your Crestron Home devices (lights, shades, scenes, thermostats) and monitor sensors through Home Assistant.
 
 ## Overview
 
-The integration communicates with the Crestron Home CWS (Crestron Web Service) server via HTTP to discover and control devices in your Crestron Home system.
+The integration communicates with the Crestron Home CWS (Crestron Web Service) server via HTTPS to discover and control devices in your Crestron Home system.
 
 ## Features
 
-- **Lights**: Control Crestron Home lights (dimmers with brightness control, switches with on/off)
+- **Lights**: Control Crestron Home lights
+  - Dimmers with brightness control and **fade in/out transitions** (native HA transition support)
+  - Switches with on/off control
 - **Shades**: Control Crestron Home shades (open, close, set position, stop movement)
 - **Scenes**: Activate Crestron Home scenes with room-based organization
-- **Thermostats** *(added in this fork)*: Climate control with temperature set point, fan modes, and operating modes
+- **Thermostats**: Climate control with temperature set point, fan modes (Auto/On/Circulate), HVAC modes (Off/Heat/Cool/Auto), and HVAC action inference
 - **Sensors**: Support for Crestron Home sensors:
   - Occupancy sensors (binary sensors for presence detection)
   - Door sensors (binary sensors with battery level reporting)
   - Photo sensors (illuminance measurement in lux)
-- **Configuration Flow**: Easy setup through the Home Assistant UI
+- **Configuration Flow**: Easy setup through the Home Assistant UI with options flow for reconfiguration
 - **Automatic Discovery**: Automatically discovers all compatible devices
 - **Room-Based Organization**: Devices are automatically organized by room on the Home Assistant dashboard
+- **Device Name Filtering**: Wildcard pattern matching to hide unwanted devices (e.g., `%bathroom%`)
+- **Selective Platform Loading**: Choose which device types to enable/disable without reinstalling
+- **Optimistic State Updates**: Immediate UI feedback when controlling devices
+- **Parallel API Polling**: Devices, sensors, and thermostats are fetched concurrently for faster updates
+- **Change Detection**: Logs when devices change state or are added/removed between polls
+- **Robust Error Handling**: Proper session management, authentication retry, and connection error recovery
 
 ### Supported Device Types
 
 | Crestron Device Subtype | Home Assistant Entity | Features | Testing Status |
 |-------------------------|------------------------|----------|----------------|
-| Dimmer                  | Light                  | On/Off, Brightness | Tested |
+| Dimmer                  | Light                  | On/Off, Brightness, Fade Transition | Tested |
 | Switch                  | Light                  | On/Off | Tested |
-| Shade                   | Cover                  | Open/Close, Position | Tested |
+| Shade                   | Cover                  | Open/Close, Position, Stop | Tested |
 | Scene                   | Scene                  | Activate | Tested |
 | OccupancySensor         | Binary Sensor         | Occupancy detection | Tested |
 | DoorSensor              | Binary Sensor         | Door open/closed status, Battery level | Not tested |
 | PhotoSensor             | Sensor                | Light level measurement (lux) | Not tested |
-| Thermostat              | Climate               | Temperature, Fan modes, Operating modes | Tested |
+| Thermostat              | Climate               | Temperature, Fan modes, HVAC modes, HVAC action | Tested |
 
-> **Note**: The OccupancySensor implementation has been thoroughly tested and works well with Crestron Home systems. The DoorSensor and PhotoSensor implementations are included but have not been tested with actual hardware yet. The Thermostat (Climate) support was added in this fork.
+> **Note**: The OccupancySensor and Thermostat implementations have been thoroughly tested. The DoorSensor and PhotoSensor implementations are included but have not been tested with actual hardware yet.
 
 ## Installation
 
@@ -54,7 +62,7 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 6. Click "Install"
 7. Restart Home Assistant
 
-> **Tip**: If you want the original version (without thermostat support), use the [original repository](https://github.com/ruudruud/ha-crestron-home) instead.
+> **Tip**: If you want the original version (without thermostat/transition support), use the [original repository](https://github.com/ruudruud/ha-crestron-home) instead.
 
 ### Manual Installation
 
@@ -91,8 +99,48 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
      - Scenes: All scenes defined in your Crestron Home system
      - Binary Sensors: Occupancy sensors and door sensors
      - Sensors: Photosensors and other measurement devices
+     - Thermostats: All climate control devices
+   - **Ignored Device Names**: Patterns to filter out unwanted devices (use `%` as wildcard)
+     - `%bathroom%` hides any device with "bathroom" in its name
+     - `bathroom%` hides devices starting with "bathroom"
+     - `%bathroom` hides devices ending with "bathroom"
+   - **Verify SSL**: Enable if your Crestron processor has a valid SSL certificate (default: disabled)
 5. Click "Submit"
 6. Please allow for some time for the device synchronization.
+
+### Reconfiguring the Integration
+
+You can change the integration settings at any time without removing and re-adding it:
+
+1. Go to Home Assistant > Settings > Devices & Services
+2. Find the Crestron Home integration
+3. Click "Configure"
+4. Modify the settings as needed (update interval, device types, ignored names, SSL)
+5. Click "Submit"
+
+The integration will automatically reload with the new configuration. If you disable a device type, its entities will be cleanly removed from Home Assistant.
+
+### Light Transitions (Fade In/Out)
+
+Dimmable lights support native Home Assistant transitions for smooth fade effects. You can use transitions:
+
+- **From automations/scripts**:
+  ```yaml
+  service: light.turn_on
+  target:
+    entity_id: light.living_room_dimmer
+  data:
+    brightness_pct: 80
+    transition: 3  # Fade over 3 seconds
+  ```
+- **Fade to off**:
+  ```yaml
+  service: light.turn_off
+  target:
+    entity_id: light.living_room_dimmer
+  data:
+    transition: 5  # Fade out over 5 seconds
+  ```
 
 ## Requirements
 
@@ -104,26 +152,42 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
   - Network connectivity between Home Assistant and the Crestron processor
   - A valid API token for the Crestron Home system
 
-## Technical Details
+## Architecture
 
-This integration:
+### Component Structure
 
-- Uses the Crestron Home REST API to communicate with the Crestron Home system
-- Implements proper session management (Crestron sessions expire after 10 minutes)
-- Provides a configuration flow for easy setup through the Home Assistant UI
-- Supports multiple device types with appropriate Home Assistant entity representations
-- Includes an abstraction layer that maintains a consistent snapshot of all devices
-- Handles device state normalization and visibility logic
+```
+custom_components/crestron_home/
+├── __init__.py          # Integration setup, platform loading, reload logic
+├── api.py               # Crestron REST API client (login, devices, sensors, thermostats)
+├── config_flow.py       # Configuration UI (setup + options flow)
+├── const.py             # Constants and defaults
+├── coordinator.py       # DataUpdateCoordinator for periodic polling
+├── device_manager.py    # Device abstraction layer, change detection, snapshot
+├── entity.py            # Base entity mixin (room association)
+├── models.py            # CrestronDevice dataclass
+├── manifest.json        # Integration metadata
+├── strings.json         # UI strings
+├── translations/        # Localization files
+├── light.py             # Light platform (dimmer + switch)
+├── cover.py             # Cover platform (shades)
+├── scene.py             # Scene platform
+├── climate.py           # Climate platform (thermostats)
+├── binary_sensor.py     # Binary sensor platform (occupancy, door)
+└── sensor.py            # Sensor platform (photo sensor)
+```
 
-### Abstraction Layer
+### How It Works
 
-The integration includes an intermediate abstraction layer that sits between the Crestron Home API and Home Assistant. This layer:
+1. **API Client** (`api.py`): Handles HTTPS communication with the Crestron CWS server, including session-based authentication (sessions expire after 10 minutes) with automatic re-login.
 
-- Polls devices at a fixed interval configured by the user
-- Maintains a consistent snapshot of all devices in the system
-- Normalizes device states across different device types
-- Handles visibility and enabled logic for Home Assistant
-- Provides a clean interface for debugging and troubleshooting
+2. **Device Manager** (`device_manager.py`): Maintains a consistent snapshot of all devices. Processes raw API data into `CrestronDevice` objects, applies visibility/availability logic, and detects changes between polls.
+
+3. **Coordinator** (`coordinator.py`): Uses Home Assistant's `DataUpdateCoordinator` pattern to poll devices at the configured interval. Returns a dictionary of devices organized by type with O(1) lookup by device ID.
+
+4. **Platform Entities**: Each platform (light, cover, scene, climate, sensor, binary_sensor) creates entities that read state from the coordinator and send commands through the API client. All entities use optimistic state updates for immediate UI feedback.
+
+5. **Device Model** (`models.py`): The `CrestronDevice` dataclass normalizes different device types into a common structure. Handles room name deduplication in `full_name` (avoids "Room Room Device" when the API already includes the room name).
 
 ### Debug Script
 
@@ -143,8 +207,6 @@ Options:
 - `--output`: Output file for the device snapshot (default: crestron_snapshot.json)
 - `--verbose`: Enable verbose logging
 
-The script will connect to your Crestron Home system, poll all devices, and save a snapshot of the device state to a JSON file. This can be useful for debugging issues with the integration.
-
 ## Troubleshooting
 
 ### Connection Issues
@@ -153,26 +215,35 @@ The script will connect to your Crestron Home system, poll all devices, and save
 - Verify that the Web API is enabled in the Crestron Home Setup app
 - Check that the API token is valid and has not expired
 - Verify that the correct host/IP is configured
+- If you see SSL errors, try disabling "Verify SSL" in the integration configuration
 
 ### Missing Devices
 
 - Make sure the device types you want to control are selected in the integration configuration
+- Check if the device name matches any of the "Ignored Device Names" patterns
 - Verify that the devices are properly configured in your Crestron Home system
-- Try increasing the update interval to ensure all devices are discovered
+- Check Home Assistant logs for any error messages from the integration
 
 ### Device Type Configuration
 
-When you configure the integration, you can select which device types (lights, shades, scenes, sensors) to include. Here's what happens when you change these settings:
+When you configure the integration, you can select which device types to include. Here's what happens when you change these settings:
 
 - **Adding Device Types**: When you add a device type, the integration will discover and add all devices of that type to Home Assistant.
 - **Removing Device Types**: When you remove a device type, all entities of that type will be completely removed from Home Assistant. This ensures your Home Assistant instance stays clean without orphaned entities.
 - **Re-adding Device Types**: If you later re-add a device type, the entities will be recreated with default settings.
 
-> **Note**: Any customizations you made to entities (such as custom names, icons, or area assignments) will be lost when you remove their device type from the configuration. These settings will need to be reapplied if you re-add the device type later.
+> **Note**: Any customizations you made to entities (such as custom names, icons, or area assignments) will be lost when you remove their device type from the configuration.
+
+### Thermostat Not Showing Correct Temperature
+
+The Crestron API reports temperatures in "deci-degrees" (e.g., 275 = 27.5°C). The integration automatically converts these values. If temperatures seem wrong, check:
+
+- The temperature unit setting in your Crestron Home system
+- The unit system configured in Home Assistant (Settings > General)
 
 ## Contributing
 
-Contributions are welcome! Please see the [Contributing Guidelines](CONTRIBUTING.md) for more information.
+Contributions are welcome! Please open an issue or pull request on GitHub.
 
 ## License
 
@@ -180,7 +251,28 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
-See the [Changelog](CHANGELOG.md) for a history of changes to this integration.
+### v0.3.0 (2026-02-11)
+- **Light Transitions**: Added native Home Assistant transition support for dimmable lights (fade in/out)
+- **Robustness Improvements**:
+  - Fixed device name deduplication (avoids "Room Room Device" when API already includes room name)
+  - Added O(1) device lookups in coordinator data (dict-based instead of list iteration)
+  - Improved thermostat HVAC action inference with deadband to prevent rapid toggling
+  - Added explicit `running` field support from API for accurate HVAC action
+  - Parallel API calls for devices, sensors, and thermostats
+  - Added change detection logging between polls
+  - Improved error handling with proper exception hierarchy
+  - Session management with login lock to prevent concurrent login attempts
+  - Entity registry cleanup when device types are disabled
+  - Options flow for reconfiguration without re-adding the integration
+- **CI/CD**: Auto-merge GitHub Action for streamlined development workflow
+
+### v0.2.0
+- **Thermostat Support**: Added climate platform with temperature control, fan modes, and HVAC modes
+- **Initial Fork**: Extended the original integration with thermostat support and various fixes
+
+### v0.1.0 (Original)
+- Initial implementation by [@ruudruud](https://github.com/ruudruud)
+- Light, shade, scene, and sensor support
 
 ## Acknowledgments
 
