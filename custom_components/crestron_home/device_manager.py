@@ -204,6 +204,14 @@ class CrestronDeviceManager:
             for device_type, type_devices in devices_by_type.items():
                 _LOGGER.info("Found %d devices for %s platform", len(type_devices), device_type)
             
+            _LOGGER.warning("CRESTRON POLL: devices_by_type thermostat count = %d, total self.devices = %d", 
+                           len(devices_by_type.get(DEVICE_TYPE_THERMOSTAT, [])), len(self.devices))
+            # Log thermostat device types for debugging
+            for dev in self.devices.values():
+                if dev.type == "Thermostat" or dev.subtype == "Thermostat":
+                    _LOGGER.warning("CRESTRON POLL: Found tstat in self.devices: id=%s type='%s' subtype='%s' ha_type='%s'",
+                                   dev.id, dev.type, dev.subtype, self._get_ha_device_type(dev.type, dev.subtype))
+            
             # Log detailed device information if debug mode is enabled
             if DEBUG_MODE:
                 self._log_device_snapshot()
