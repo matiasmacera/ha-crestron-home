@@ -386,9 +386,14 @@ class CrestronDeviceManager:
 
     def _process_thermostats(self, thermostats_data: List[Dict[str, Any]]) -> None:
         """Process thermostat data from the Crestron Home API."""
+        _LOGGER.warning("CRESTRON TSTAT: Processing %d thermostats, raw keys: %s", 
+                       len(thermostats_data), 
+                       [list(t.keys()) for t in thermostats_data[:1]] if thermostats_data else "none")
         for tstat in thermostats_data:
+            _LOGGER.warning("CRESTRON TSTAT: raw data = %s", str(tstat)[:500])
             tstat_id = tstat.get("id")
             if tstat_id is None:
+                _LOGGER.warning("CRESTRON TSTAT: id is None, skipping")
                 continue
 
             room_id = tstat.get("roomId")
