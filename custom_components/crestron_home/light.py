@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
+    ATTR_TRANSITION,
     ColorMode,
     LightEntity,
     LightEntityFeature,
@@ -185,6 +186,7 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
         super().__init__(coordinator, device)
         self._attr_color_mode = ColorMode.BRIGHTNESS
         self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+        self._attr_supported_features = LightEntityFeature.TRANSITION
 
     @property
     def brightness(self) -> Optional[int]:
@@ -202,12 +204,29 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
             # Default to full brightness if not specified
             level = CrestronClient.percentage_to_crestron(100)
 
+        # Get transition time in seconds (HA provides float seconds)
+        transition = int(kwargs.get(ATTR_TRANSITION, 0))
+
         # Optimistic update: reflect state immediately
         self._device.level = level
         self._device.status = True
         self.async_write_ha_state()
 
         await self.coordinator.client.set_light_state(
-            self._device.id, level
+            self._device.id, level, time=transition
+        )
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the light off with optional fade out."""
+        transition = int(kwargs.get(ATTR_TRANSITION, 0))
+
+        # Optimistic update: reflect state immediately
+        self._device.level = 0
+        self._device.status = False
+        self.async_write_ha_state()
+
+        await self.coordinator.client.set_light_state(
+            self._device.id, 0, time=transition
         )
         await self.coordinator.async_request_refresh()
