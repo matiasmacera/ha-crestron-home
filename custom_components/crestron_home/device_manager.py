@@ -419,7 +419,7 @@ class CrestronDeviceManager:
                 _LOGGER.debug(
                     "Processed thermostat: %s (ID: %s, Mode: %s, Temp: %s)",
                     device.full_name, tstat_id,
-                    tstat.get("mode", "unknown"),
+                    tstat.get("currentMode") or tstat.get("mode", "unknown"),
                     tstat.get("currentTemperature", "unknown"),
                 )
             except Exception as ex:
@@ -568,9 +568,14 @@ class CrestronDeviceManager:
                     device_data["value"] = device.value
                 snapshot["sensors"].append(device_data)
             elif ha_device_type == DEVICE_TYPE_THERMOSTAT:
-                device_data["mode"] = device.raw_data.get("mode")
+                device_data["mode"] = device.raw_data.get("currentMode") or device.raw_data.get("mode")
                 device_data["current_temperature"] = device.raw_data.get("currentTemperature")
-                device_data["setpoint"] = (device.raw_data.get("setPoint") or {}).get("temperature")
+                # Handle both currentSetPoint (array) and setPoint (object) formats
+                csp = device.raw_data.get("currentSetPoint")
+                if isinstance(csp, list) and csp:
+                    device_data["setpoint"] = csp[0].get("temperature")
+                else:
+                    device_data["setpoint"] = (device.raw_data.get("setPoint") or {}).get("temperature")
                 snapshot["thermostats"].append(device_data)
         
         return snapshot

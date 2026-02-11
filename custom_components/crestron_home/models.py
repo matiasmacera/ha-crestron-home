@@ -39,7 +39,13 @@ class CrestronDevice:
     
     @property
     def full_name(self) -> str:
-        """Return the full name of the device including room."""
+        """Return the full name of the device including room.
+
+        Avoids duplication when the device name already starts with the room name
+        (e.g. API returns "Comedor Termostato PB" for a device in room "Comedor").
+        """
+        if self.room and self.name.lower().startswith(self.room.lower()):
+            return self.name.strip()
         return f"{self.room} {self.name}".strip()
     
     @property

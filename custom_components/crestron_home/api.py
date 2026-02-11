@@ -366,8 +366,12 @@ class CrestronClient:
     async def set_thermostat_mode(self, thermostat_id: int, mode: str) -> None:
         """Set thermostat HVAC mode (Off, Heat, Cool, Auto)."""
         await self._api_request("POST", "/thermostats/mode", {
-            "id": thermostat_id,
-            "mode": mode,
+            "thermostats": [
+                {
+                    "id": thermostat_id,
+                    "mode": mode,
+                }
+            ],
         })
 
     async def set_thermostat_setpoint(
@@ -376,22 +380,34 @@ class CrestronClient:
         """Set thermostat target temperature (Crestron tenths-of-degree)."""
         await self._api_request("POST", "/thermostats/SetPoint", {
             "id": thermostat_id,
-            "type": setpoint_type,
-            "temperature": temperature,
+            "setpoints": [
+                {
+                    "type": setpoint_type,
+                    "temperature": temperature,
+                }
+            ],
         })
 
     async def set_thermostat_fan_mode(self, thermostat_id: int, mode: str) -> None:
         """Set thermostat fan mode (Auto, On)."""
         await self._api_request("POST", "/thermostats/fanmode", {
-            "id": thermostat_id,
-            "mode": mode,
+            "thermostats": [
+                {
+                    "id": thermostat_id,
+                    "mode": mode,
+                }
+            ],
         })
 
     async def set_thermostat_schedule(self, thermostat_id: int, mode: str) -> None:
         """Set thermostat schedule state (Run, Hold)."""
         await self._api_request("POST", "/thermostats/schedule", {
-            "id": thermostat_id,
-            "mode": mode,
+            "thermostats": [
+                {
+                    "id": thermostat_id,
+                    "mode": mode,
+                }
+            ],
         })
 
     @staticmethod
