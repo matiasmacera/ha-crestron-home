@@ -204,15 +204,6 @@ class CrestronDeviceManager:
             for device_type, type_devices in devices_by_type.items():
                 _LOGGER.info("Found %d devices for %s platform", len(type_devices), device_type)
             
-            _LOGGER.warning("CRESTRON POLL: devices_by_type thermostat count = %d, total self.devices = %d", 
-                           len(devices_by_type.get(DEVICE_TYPE_THERMOSTAT, [])), len(self.devices))
-            # Log ALL devices that have Thermostat in type or subtype
-            for dev_id, dev in self.devices.items():
-                if "hermostat" in str(dev.type) or "hermostat" in str(dev.subtype):
-                    ha_type = self._get_ha_device_type(dev.type, dev.subtype)
-                    _LOGGER.warning("CRESTRON POLL: tstat device id=%s type='%s' subtype='%s' -> ha_type='%s'",
-                                   dev_id, dev.type, dev.subtype, ha_type)
-            
             # Log detailed device information if debug mode is enabled
             if DEBUG_MODE:
                 self._log_device_snapshot()
@@ -387,14 +378,9 @@ class CrestronDeviceManager:
 
     def _process_thermostats(self, thermostats_data: List[Dict[str, Any]]) -> None:
         """Process thermostat data from the Crestron Home API."""
-        _LOGGER.warning("CRESTRON TSTAT: Processing %d thermostats, raw keys: %s", 
-                       len(thermostats_data), 
-                       [list(t.keys()) for t in thermostats_data[:1]] if thermostats_data else "none")
         for tstat in thermostats_data:
-            _LOGGER.warning("CRESTRON TSTAT: raw data = %s", str(tstat)[:500])
             tstat_id = tstat.get("id")
             if tstat_id is None:
-                _LOGGER.warning("CRESTRON TSTAT: id is None, skipping")
                 continue
 
             try:
@@ -408,9 +394,6 @@ class CrestronDeviceManager:
 
                 if tstat_id in self.devices:
                     # Update existing thermostat
-                    existing = self.devices[tstat_id]
-                    _LOGGER.warning("CRESTRON TSTAT: id=%s already exists as type='%s' subtype='%s', overwriting to Thermostat", 
-                                   tstat_id, existing.type, existing.subtype)
                     device = self.devices[tstat_id]
                     device.type = "Thermostat"
                     device.subtype = "Thermostat"
@@ -433,12 +416,14 @@ class CrestronDeviceManager:
                     self.devices[tstat_id] = device
                     self._update_ha_parameters(device)
 
-                _LOGGER.warning(
-                    "CRESTRON TSTAT: Saved thermostat '%s' (ID: %s) to self.devices, total devices now: %d",
-                    device.full_name, tstat_id, len(self.devices),
+                _LOGGER.debug(
+                    "Processed thermostat: %s (ID: %s, Mode: %s, Temp: %s)",
+                    device.full_name, tstat_id,
+                    tstat.get("mode", "unknown"),
+                    tstat.get("currentTemperature", "unknown"),
                 )
             except Exception as ex:
-                _LOGGER.error("CRESTRON TSTAT: Error processing thermostat id=%s: %s", tstat_id, ex)
+                _LOGGER.error("Error processing thermostat id=%s: %s", tstat_id, ex)
 
     def _get_ha_device_type(self, device_type: str, subtype: str) -> Optional[str]:
         """Map Crestron device type to Home Assistant device type."""
