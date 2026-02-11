@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "home-assistant": {
+      "command": "mcp-proxy",
+      "args": [
+        "--transport=streamablehttp",
+        "--stateless",
+        "-H",
+        "Authorization",
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIxMTNiOGI0YTAzMTQ0NjYxYThjMGEzYzU4ZjljZmI0MCIsImlhdCI6MTc3MDgwNzk4NiwiZXhwIjoyMDg2MTY3OTg2fQ.M32vCoY6tD2OWhfAhFyGr0vTAS0JUrppbrx9UcsP3LE",
+        "https://ha.zaino.casa/api/mcp"
+      ]
+    }
+  }
+}
