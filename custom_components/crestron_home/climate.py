@@ -60,20 +60,38 @@ async def async_setup_entry(
         _LOGGER.debug("Thermostat platform not enabled, skipping setup")
         return
 
-    # Get all thermostat devices from the coordinator
-    thermostats = []
+    added_ids: set[str] = set()
 
-    for device in coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
-        thermostat = CrestronHomeThermostat(coordinator, device)
+    @callback
+    def _async_add_thermostats() -> None:
+        """Add thermostat entities from coordinator data."""
+        thermostats = []
 
-        # Set hidden_by if device is marked as hidden
-        if device.ha_hidden:
-            thermostat._attr_hidden_by = "integration"
+        for device in coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
+            device_id = str(device.id)
+            if device_id in added_ids:
+                continue
 
-        thermostats.append(thermostat)
+            thermostat = CrestronHomeThermostat(coordinator, device)
 
-    _LOGGER.debug("Adding %d thermostat entities", len(thermostats))
-    async_add_entities(thermostats)
+            # Set hidden_by if device is marked as hidden
+            if device.ha_hidden:
+                thermostat._attr_hidden_by = "integration"
+
+            thermostats.append(thermostat)
+            added_ids.add(device_id)
+
+        if thermostats:
+            _LOGGER.info("Adding %d thermostat entities", len(thermostats))
+            async_add_entities(thermostats)
+
+    # Add any thermostats already available
+    _async_add_thermostats()
+
+    # Listen for coordinator updates to add new thermostats
+    entry.async_on_unload(
+        coordinator.async_add_listener(_async_add_thermostats)
+    )
 
 
 class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntity):
