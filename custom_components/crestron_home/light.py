@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from homeassistant.components.light import (
@@ -71,6 +72,10 @@ async def async_setup_entry(
 class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
     """Representation of a Crestron Home light."""
 
+    # Seconds to ignore coordinator updates after a command, giving Crestron
+    # time to process the change so the next poll returns the real state.
+    _OPTIMISTIC_COOLDOWN = 2.0
+
     def __init__(
         self,
         coordinator: CrestronHomeDataUpdateCoordinator,
@@ -84,6 +89,7 @@ class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
         self._attr_name = device.full_name
         self._attr_has_entity_name = False
         self._attr_device_class = None
+        self._last_command_time: float = 0.0
         
         # Set up device info
         self._attr_device_info = DeviceInfo(
@@ -129,6 +135,7 @@ class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
         level = CrestronClient.percentage_to_crestron(100)
 
         # Optimistic update: reflect state immediately
+        self._last_command_time = time.monotonic()
         self._device.level = level
         self._device.status = True
         self.async_write_ha_state()
@@ -136,11 +143,11 @@ class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
         await self.coordinator.client.set_light_state(
             self._device.id, level
         )
-        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
         # Optimistic update: reflect state immediately
+        self._last_command_time = time.monotonic()
         self._device.level = 0
         self._device.status = False
         self.async_write_ha_state()
@@ -148,11 +155,15 @@ class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
         await self.coordinator.client.set_light_state(
             self._device.id, 0
         )
-        await self.coordinator.async_request_refresh()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
+        # Skip coordinator updates during optimistic cooldown to avoid
+        # stale poll data overwriting the state we just set.
+        if time.monotonic() - self._last_command_time < self._OPTIMISTIC_COOLDOWN:
+            return
+
         device = self.coordinator.data.get(DEVICE_TYPE_LIGHT, {}).get(self._device.id)
         if device is not None:
             self._device = device
@@ -208,6 +219,7 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
         transition = int(kwargs.get(ATTR_TRANSITION, 0))
 
         # Optimistic update: reflect state immediately
+        self._last_command_time = time.monotonic()
         self._device.level = level
         self._device.status = True
         self.async_write_ha_state()
@@ -215,13 +227,13 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
         await self.coordinator.client.set_light_state(
             self._device.id, level, time=transition
         )
-        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off with optional fade out."""
         transition = int(kwargs.get(ATTR_TRANSITION, 0))
 
         # Optimistic update: reflect state immediately
+        self._last_command_time = time.monotonic()
         self._device.level = 0
         self._device.status = False
         self.async_write_ha_state()
@@ -229,4 +241,3 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
         await self.coordinator.client.set_light_state(
             self._device.id, 0, time=transition
         )
-        await self.coordinator.async_request_refresh()
