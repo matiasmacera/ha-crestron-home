@@ -141,10 +141,9 @@ class CrestronDeviceManager:
     async def poll_devices(self) -> Dict[str, List[CrestronDevice]]:
         """Poll devices from the Crestron Home system and update the device snapshot."""
         try:
-            _LOGGER.debug(
-                "Polling devices with enabled types: %s, ignored names: %s",
+            _LOGGER.warning(
+                "CRESTRON POLL: enabled_device_types = %s",
                 self.enabled_device_types,
-                self.ignored_device_names
             )
             
             # Store previous devices for future change detection
@@ -152,6 +151,7 @@ class CrestronDeviceManager:
             
             # Get all devices, sensors, and thermostats from the Crestron Home system
             fetch_thermostats = DEVICE_TYPE_THERMOSTAT in self.enabled_device_types
+            _LOGGER.warning("CRESTRON POLL: fetch_thermostats = %s", fetch_thermostats)
             
             coros = [
                 self.client.get_devices(self.enabled_device_types, self.ignored_device_names),
@@ -166,8 +166,8 @@ class CrestronDeviceManager:
             sensors_data = results[1]
             thermostats_data = results[2] if fetch_thermostats else []
             
-            _LOGGER.debug("Received %d devices, %d sensors, and %d thermostats from API", 
-                         len(devices_data), len(sensors_data), len(thermostats_data))
+            _LOGGER.warning("CRESTRON POLL: Received %d devices, %d sensors, %d thermostats",
+                           len(devices_data), len(sensors_data), len(thermostats_data))
             
             # Process devices
             self._process_devices(devices_data)
