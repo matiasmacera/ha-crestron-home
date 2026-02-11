@@ -396,43 +396,43 @@ class CrestronDeviceManager:
                 _LOGGER.warning("CRESTRON TSTAT: id is None, skipping")
                 continue
 
-            room_id = tstat.get("roomId")
-            room_name = ""
-            if self.client.rooms:
-                room_name = next(
-                    (r.get("name", "") for r in self.client.rooms if r.get("id") == room_id),
-                    "",
-                )
+            try:
+                room_id = tstat.get("roomId")
+                room_name = ""
+                if self.client.rooms:
+                    room_name = next(
+                        (r.get("name", "") for r in self.client.rooms if r.get("id") == room_id),
+                        "",
+                    )
 
-            if tstat_id in self.devices:
-                # Update existing thermostat
-                device = self.devices[tstat_id]
-                device.connection = tstat.get("connectionStatus", "online")
-                device.raw_data = tstat
-                device.last_updated = datetime.now()
-                self._update_ha_parameters(device)
-            else:
-                # Create new thermostat device
-                device = CrestronDevice(
-                    id=tstat_id,
-                    room=room_name,
-                    name=tstat.get("name", "Thermostat"),
-                    type="Thermostat",
-                    subtype="Thermostat",
-                    connection=tstat.get("connectionStatus", "online"),
-                    room_id=room_id,
-                    raw_data=tstat,
-                )
-                self.devices[tstat_id] = device
-                self._update_ha_parameters(device)
+                if tstat_id in self.devices:
+                    # Update existing thermostat
+                    device = self.devices[tstat_id]
+                    device.connection = tstat.get("connectionStatus", "online")
+                    device.raw_data = tstat
+                    device.last_updated = datetime.now()
+                    self._update_ha_parameters(device)
+                else:
+                    # Create new thermostat device
+                    device = CrestronDevice(
+                        id=tstat_id,
+                        room=room_name,
+                        name=tstat.get("name", "Thermostat"),
+                        type="Thermostat",
+                        subtype="Thermostat",
+                        connection=tstat.get("connectionStatus", "online"),
+                        room_id=room_id,
+                        raw_data=tstat,
+                    )
+                    self.devices[tstat_id] = device
+                    self._update_ha_parameters(device)
 
-            _LOGGER.debug(
-                "Processed thermostat: %s (ID: %d, Mode: %s, Temp: %s)",
-                device.full_name,
-                tstat_id,
-                tstat.get("mode"),
-                tstat.get("currentTemperature"),
-            )
+                _LOGGER.warning(
+                    "CRESTRON TSTAT: Saved thermostat '%s' (ID: %s) to self.devices, total devices now: %d",
+                    device.full_name, tstat_id, len(self.devices),
+                )
+            except Exception as ex:
+                _LOGGER.error("CRESTRON TSTAT: Error processing thermostat id=%s: %s", tstat_id, ex)
 
     def _get_ha_device_type(self, device_type: str, subtype: str) -> Optional[str]:
         """Map Crestron device type to Home Assistant device type."""
