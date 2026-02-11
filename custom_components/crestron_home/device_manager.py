@@ -408,6 +408,8 @@ class CrestronDeviceManager:
                 if tstat_id in self.devices:
                     # Update existing thermostat
                     device = self.devices[tstat_id]
+                    device.type = "Thermostat"
+                    device.subtype = "Thermostat"
                     device.connection = tstat.get("connectionStatus", "online")
                     device.raw_data = tstat
                     device.last_updated = datetime.now()
