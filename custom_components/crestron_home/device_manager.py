@@ -9,8 +9,8 @@ from homeassistant.core import HomeAssistant
 
 from .api import CrestronApiError, CrestronClient
 
-# Set to True to enable detailed device logging
-DEBUG_MODE = True
+# Set to True to enable detailed device logging (disable in production)
+DEBUG_MODE = False
 from .const import (
     DEVICE_SUBTYPE_DOOR_SENSOR,
     DEVICE_SUBTYPE_OCCUPANCY_SENSOR,
@@ -182,23 +182,36 @@ class CrestronDeviceManager:
             # Update last poll time
             self.last_poll_time = datetime.now()
             
-            # TODO: Implement change detection logic here
-            # This will compare self.devices with self.previous_devices
-            
-            # Organize devices by type for easier access
-            devices_by_type = {
-                DEVICE_TYPE_LIGHT: [],
-                DEVICE_TYPE_SHADE: [],
-                DEVICE_TYPE_SCENE: [],
-                DEVICE_TYPE_BINARY_SENSOR: [],
-                DEVICE_TYPE_SENSOR: [],
-                DEVICE_TYPE_THERMOSTAT: [],
+            # Change detection: log devices that changed since last poll
+            if self.previous_devices:
+                for dev_id, device in self.devices.items():
+                    prev = self.previous_devices.get(dev_id)
+                    if prev is None:
+                        _LOGGER.info("New device discovered: %s (ID: %d)", device.full_name, dev_id)
+                    elif (device.status != prev.status or device.level != prev.level
+                          or device.position != prev.position or device.connection != prev.connection
+                          or device.presence != prev.presence or device.door_status != prev.door_status):
+                        _LOGGER.debug("Device changed: %s (ID: %d)", device.full_name, dev_id)
+                # Detect removed devices
+                for dev_id in self.previous_devices:
+                    if dev_id not in self.devices:
+                        _LOGGER.info("Device removed: %s (ID: %d)",
+                                     self.previous_devices[dev_id].full_name, dev_id)
+
+            # Organize devices by type as dict[int, CrestronDevice] for O(1) lookups
+            devices_by_type: Dict[str, Dict[int, CrestronDevice]] = {
+                DEVICE_TYPE_LIGHT: {},
+                DEVICE_TYPE_SHADE: {},
+                DEVICE_TYPE_SCENE: {},
+                DEVICE_TYPE_BINARY_SENSOR: {},
+                DEVICE_TYPE_SENSOR: {},
+                DEVICE_TYPE_THERMOSTAT: {},
             }
-            
+
             for device in self.devices.values():
                 ha_device_type = self._get_ha_device_type(device.type, device.subtype)
                 if ha_device_type and ha_device_type in devices_by_type:
-                    devices_by_type[ha_device_type].append(device)
+                    devices_by_type[ha_device_type][device.id] = device
             
             # Log device counts by type
             for device_type, type_devices in devices_by_type.items():
@@ -212,13 +225,7 @@ class CrestronDeviceManager:
         
         except CrestronApiError as error:
             _LOGGER.error("Error polling devices: %s", error)
-            return {
-                DEVICE_TYPE_LIGHT: [],
-                DEVICE_TYPE_SHADE: [],
-                DEVICE_TYPE_SCENE: [],
-                DEVICE_TYPE_BINARY_SENSOR: [],
-                DEVICE_TYPE_SENSOR: [],
-            }
+            raise
 
     def _process_devices(self, devices_data: List[Dict[str, Any]]) -> None:
         """Process device data from the API and update the device snapshot."""
@@ -419,7 +426,7 @@ class CrestronDeviceManager:
                 _LOGGER.debug(
                     "Processed thermostat: %s (ID: %s, Mode: %s, Temp: %s)",
                     device.full_name, tstat_id,
-                    tstat.get("mode", "unknown"),
+                    tstat.get("currentMode") or tstat.get("mode", "unknown"),
                     tstat.get("currentTemperature", "unknown"),
                 )
             except Exception as ex:
@@ -568,9 +575,14 @@ class CrestronDeviceManager:
                     device_data["value"] = device.value
                 snapshot["sensors"].append(device_data)
             elif ha_device_type == DEVICE_TYPE_THERMOSTAT:
-                device_data["mode"] = device.raw_data.get("mode")
+                device_data["mode"] = device.raw_data.get("currentMode") or device.raw_data.get("mode")
                 device_data["current_temperature"] = device.raw_data.get("currentTemperature")
-                device_data["setpoint"] = (device.raw_data.get("setPoint") or {}).get("temperature")
+                # Handle both currentSetPoint (array) and setPoint (object) formats
+                csp = device.raw_data.get("currentSetPoint")
+                if isinstance(csp, list) and csp:
+                    device_data["setpoint"] = csp[0].get("temperature")
+                else:
+                    device_data["setpoint"] = (device.raw_data.get("setPoint") or {}).get("temperature")
                 snapshot["thermostats"].append(device_data)
         
         return snapshot

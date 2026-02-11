@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from homeassistant.components.climate import (
     ClimateEntity,
@@ -30,16 +30,106 @@ from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-# Crestron mode -> HA HVACMode (Crestron uses capitalized strings)
-CRESTRON_TO_HVAC_MODE = {
+# Crestron mode → HA HVACMode (case-insensitive lookup built below)
+_CRESTRON_MODE_MAP = {
     "Off": HVACMode.OFF,
     "Heat": HVACMode.HEAT,
     "Cool": HVACMode.COOL,
     "Auto": HVACMode.HEAT_COOL,
 }
+# Build case-insensitive lookup
+CRESTRON_TO_HVAC_MODE: dict[str, HVACMode] = {}
+for _k, _v in _CRESTRON_MODE_MAP.items():
+    CRESTRON_TO_HVAC_MODE[_k] = _v
+    CRESTRON_TO_HVAC_MODE[_k.upper()] = _v
+    CRESTRON_TO_HVAC_MODE[_k.lower()] = _v
 
-# HA HVACMode -> Crestron mode string
-HVAC_MODE_TO_CRESTRON = {v: k for k, v in CRESTRON_TO_HVAC_MODE.items()}
+# HA HVACMode → Crestron mode string (title case, matching API docs)
+HVAC_MODE_TO_CRESTRON = {v: k for k, v in _CRESTRON_MODE_MAP.items()}
+
+
+def _get_mode_str(raw_data: dict[str, Any]) -> str:
+    """Get current mode string from raw thermostat data.
+
+    The Crestron API may use 'currentMode' or 'mode' depending on the version.
+    """
+    return raw_data.get("currentMode") or raw_data.get("mode") or "Off"
+
+
+def _get_target_temp_raw(raw_data: dict[str, Any]) -> int | None:
+    """Get the current target temperature (in Crestron tenths) from raw data.
+
+    Handles two API formats:
+      - currentSetPoint: array of {type, temperature/value} (newer / Homebridge format)
+      - setPoint: object with {type, temperature, minValue, maxValue} (docs format)
+    """
+    # Try currentSetPoint array first (Homebridge-observed format)
+    csp = raw_data.get("currentSetPoint")
+    if isinstance(csp, list) and csp:
+        mode = _get_mode_str(raw_data).lower()
+        # Try to find a setpoint matching the current mode
+        for sp in csp:
+            if sp.get("type", "").lower() == mode:
+                # Support both "temperature" and "value" keys
+                return sp.get("temperature") or sp.get("value")
+        # Fall back to Cool, then Heat, then first available
+        for pref in ("cool", "heat"):
+            for sp in csp:
+                if sp.get("type", "").lower() == pref:
+                    return sp.get("temperature") or sp.get("value")
+        # Last resort: first entry with a temperature/value
+        for sp in csp:
+            val = sp.get("temperature") or sp.get("value")
+            if val is not None:
+                return val
+        return None
+
+    # Fall back to setPoint object (official docs format)
+    sp_obj = raw_data.get("setPoint")
+    if isinstance(sp_obj, dict):
+        return sp_obj.get("temperature")
+
+    return None
+
+
+def _get_setpoint_type(raw_data: dict[str, Any]) -> str:
+    """Determine the setpoint type to use when setting temperature.
+
+    Returns a mode string like 'Cool', 'Heat', or 'Auto'.
+    """
+    mode = _get_mode_str(raw_data)
+    # For Off mode, default to Cool
+    if mode.lower() == "off":
+        return "Cool"
+    # Title-case the mode to match Crestron API conventions
+    return mode.title()
+
+
+def _get_min_max_temps(raw_data: dict[str, Any]) -> tuple[int, int]:
+    """Get min and max temperatures from availableSetPoints or setPoint.
+
+    Returns (min_value, max_value) in Crestron tenths.
+    """
+    # Try availableSetPoints array first
+    available_sps = raw_data.get("availableSetPoints")
+    if isinstance(available_sps, list) and available_sps:
+        all_mins = [sp.get("minValue") for sp in available_sps if sp.get("minValue") is not None]
+        all_maxs = [sp.get("maxValue") for sp in available_sps if sp.get("maxValue") is not None]
+        min_val = min(all_mins) if all_mins else None
+        max_val = max(all_maxs) if all_maxs else None
+        if min_val is not None and max_val is not None:
+            return min_val, max_val
+
+    # Fall back to setPoint object
+    sp_obj = raw_data.get("setPoint")
+    if isinstance(sp_obj, dict):
+        min_v = sp_obj.get("minValue")
+        max_v = sp_obj.get("maxValue")
+        if min_v is not None and max_v is not None:
+            return min_v, max_v
+
+    # Return None sentinel so caller can use unit-appropriate defaults
+    return None, None
 
 
 async def async_setup_entry(
@@ -63,9 +153,10 @@ async def async_setup_entry(
         """Add thermostat entities from coordinator data."""
         thermostats = []
 
-        thermostat_devices = coordinator.data.get(DEVICE_TYPE_THERMOSTAT, [])
+        thermostat_devices = coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {})
+        _LOGGER.debug("CLIMATE SETUP: Found %d thermostat devices", len(thermostat_devices))
 
-        for device in thermostat_devices:
+        for device in thermostat_devices.values():
             device_id = str(device.id)
             if device_id in added_ids:
                 continue
@@ -119,7 +210,6 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
             self._is_celsius = False
 
         # Build supported HVAC modes from availableSystemModes
-        # Crestron returns: ["Off", "Heat"] or ["Off", "Heat", "Cool", "Auto"]
         available_modes = device.raw_data.get("availableSystemModes", [])
         self._attr_hvac_modes = []
         for mode_str in available_modes:
@@ -130,18 +220,15 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
             self._attr_hvac_modes.insert(0, HVACMode.OFF)
 
         # Build supported fan modes from availableFanModes
-        # Crestron returns: ["Auto", "On", "CirculateLow", "CirculateMedium"] or []
+        # Crestron returns: ["Auto", "On", "CirculateLow", ...] or []
         available_fan = device.raw_data.get("availableFanModes", [])
         self._attr_fan_modes = available_fan if available_fan else None
 
-        # Set min/max from availableSetPoints array
-        # Crestron returns: [{"type": "heat", "minValue": 30, "maxValue": 320}]
-        # Values are in deci-degrees (30 = 3.0C, 320 = 32.0C)
-        available_setpoints = device.raw_data.get("availableSetPoints", [])
-        if available_setpoints:
-            sp = available_setpoints[0]
-            self._attr_min_temp = self._from_crestron_temp(sp.get("minValue", 30))
-            self._attr_max_temp = self._from_crestron_temp(sp.get("maxValue", 320))
+        # Set min/max from availableSetPoints or setPoint
+        min_raw, max_raw = _get_min_max_temps(device.raw_data)
+        if min_raw is not None and max_raw is not None:
+            self._attr_min_temp = self._from_crestron_temp(min_raw)
+            self._attr_max_temp = self._from_crestron_temp(max_raw)
         else:
             self._attr_min_temp = 3.0 if self._is_celsius else 45.0
             self._attr_max_temp = 32.0 if self._is_celsius else 95.0
@@ -189,11 +276,9 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
     # -- State properties (read from coordinator) --
 
     def _get_device(self) -> CrestronDevice:
-        """Get the latest device data from coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
-            if device.id == self._device.id:
-                return device
-        return self._device
+        """Get the latest device data from coordinator via O(1) dict lookup."""
+        device = self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {}).get(self._device.id)
+        return device if device is not None else self._device
 
     @property
     def available(self) -> bool:
@@ -209,58 +294,59 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
 
     @property
     def target_temperature(self) -> float | None:
-        """Return the target temperature.
-
-        Crestron returns currentSetPoint as an array:
-        - When off: [{"type": "off"}]
-        - When heating: [{"type": "heat", "value": 220}]
-        - When cooling: [{"type": "cool", "value": 250}]
-        """
-        device = self._get_device()
-        setpoints = device.raw_data.get("currentSetPoint", [])
-
-        if not setpoints:
-            return None
-
-        for sp in setpoints:
-            if "value" in sp:
-                return self._from_crestron_temp(sp["value"])
-
-        # No active setpoint (all entries are {"type": "off"})
-        return None
+        """Return the target temperature."""
+        return self._from_crestron_temp(
+            _get_target_temp_raw(self._get_device().raw_data)
+        )
 
     @property
     def hvac_mode(self) -> HVACMode:
         """Return current HVAC mode."""
-        mode_str = self._get_device().raw_data.get("currentMode", "Off")
+        mode_str = _get_mode_str(self._get_device().raw_data)
         return CRESTRON_TO_HVAC_MODE.get(mode_str, HVACMode.OFF)
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        """Infer current HVAC action from mode + temps."""
+        """Infer current HVAC action from mode + temps.
+
+        Uses the API's 'running' field if available, otherwise infers
+        from mode and temperature comparison with a small deadband to
+        avoid rapid toggling between IDLE and HEATING/COOLING.
+        """
         device = self._get_device()
-        mode_str = device.raw_data.get("currentMode", "Off")
-        if mode_str == "Off":
+        mode_str = _get_mode_str(device.raw_data)
+
+        if mode_str.lower() == "off":
             return HVACAction.OFF
 
-        current = device.raw_data.get("currentTemperature")
-        target = None
-        for sp in device.raw_data.get("currentSetPoint", []):
-            if "value" in sp:
-                target = sp["value"]
-                break
+        # Use explicit running state from API if available
+        running = device.raw_data.get("running")
+        if running is not None:
+            if isinstance(running, str):
+                running_lower = running.lower()
+                if running_lower == "cooling":
+                    return HVACAction.COOLING
+                if running_lower == "heating":
+                    return HVACAction.HEATING
+                if running_lower in ("idle", "off"):
+                    return HVACAction.IDLE
 
+        current = device.raw_data.get("currentTemperature")
+        target = _get_target_temp_raw(device.raw_data)
         if current is None or target is None:
             return HVACAction.IDLE
 
-        if mode_str == "Cool" and current > target:
+        # Deadband of 0.5 deci-degrees (0.05 real degrees) to avoid toggling
+        deadband = 5
+        mode_lower = mode_str.lower()
+        if mode_lower == "cool" and current > target + deadband:
             return HVACAction.COOLING
-        if mode_str == "Heat" and current < target:
+        if mode_lower == "heat" and current < target - deadband:
             return HVACAction.HEATING
-        if mode_str == "Auto":
-            if current > target:
+        if mode_lower == "auto":
+            if current > target + deadband:
                 return HVACAction.COOLING
-            if current < target:
+            if current < target - deadband:
                 return HVACAction.HEATING
         return HVACAction.IDLE
 
@@ -273,15 +359,12 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra attributes."""
         device = self._get_device()
-        setpoints = device.raw_data.get("currentSetPoint", [])
-        sp_type = setpoints[0].get("type") if setpoints else None
-
         return {
             "crestron_id": device.id,
             "room_name": device.room,
             "scheduler_state": device.raw_data.get("schedulerState"),
             "connection_status": device.connection,
-            "setpoint_type": sp_type,
+            "setpoint_type": _get_setpoint_type(device.raw_data),
             "temperature_units": device.raw_data.get("temperatureUnits"),
         }
 
@@ -307,17 +390,7 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
 
         # Determine setpoint type from current mode
         device = self._get_device()
-        mode_str = device.raw_data.get("currentMode", "Off")
-
-        if mode_str == "Heat":
-            sp_type = "heat"
-        elif mode_str == "Cool":
-            sp_type = "cool"
-        elif mode_str == "Auto":
-            setpoints = device.raw_data.get("currentSetPoint", [])
-            sp_type = setpoints[0].get("type", "heat") if setpoints else "heat"
-        else:
-            sp_type = "heat"
+        sp_type = _get_setpoint_type(device.raw_data)
 
         await self.coordinator.client.set_thermostat_setpoint(
             self._device.id, sp_type, self._to_crestron_temp(temp)
@@ -357,9 +430,8 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
-            if device.id == self._device.id:
-                self._device = device
-                self._device_info = device
-                break
+        device = self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {}).get(self._device.id)
+        if device is not None:
+            self._device = device
+            self._device_info = device
         self.async_write_ha_state()
