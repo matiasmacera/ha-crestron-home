@@ -50,17 +50,17 @@ async def async_setup_entry(
     # Get all light devices from the coordinator
     lights = []
     
-    for device in coordinator.data.get(DEVICE_TYPE_LIGHT, []):
+    for device in coordinator.data.get(DEVICE_TYPE_LIGHT, {}).values():
         # Create the appropriate light entity
         if device.type == DEVICE_SUBTYPE_DIMMER:
             light = CrestronHomeDimmer(coordinator, device)
         else:
             light = CrestronHomeLight(coordinator, device)
-        
+
         # Set hidden_by if device is marked as hidden
         if device.ha_hidden:
             light._attr_hidden_by = "integration"
-            
+
         lights.append(light)
     
     _LOGGER.debug("Adding %d light entities", len(lights))
@@ -94,16 +94,15 @@ class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
             suggested_area=device.room,
         )
     
+    def _get_device(self) -> CrestronDevice:
+        """Get the latest device data from coordinator via O(1) dict lookup."""
+        device = self.coordinator.data.get(DEVICE_TYPE_LIGHT, {}).get(self._device.id)
+        return device if device is not None else self._device
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_LIGHT, []):
-            if device.id == self._device.id:
-                return device.is_available
-        
-        # If device not found, use the stored state
-        return self._device.is_available
+        return self._get_device().is_available
         
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
@@ -121,44 +120,42 @@ class CrestronHomeBaseLight(CrestronRoomEntity, CoordinatorEntity, LightEntity):
     @property
     def is_on(self) -> bool:
         """Return true if light is on."""
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_LIGHT, []):
-            if device.id == self._device.id:
-                return device.level > 0
-        
-        # If device not found, use the stored state
-        return self._device.level > 0
+        return self._get_device().level > 0
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
         # Default to full brightness if not specified
         level = CrestronClient.percentage_to_crestron(100)
-        
+
+        # Optimistic update: reflect state immediately
+        self._device.level = level
+        self._device.status = True
+        self.async_write_ha_state()
+
         await self.coordinator.client.set_light_state(
             self._device.id, level
         )
-        
-        # Request a coordinator update to get the new state
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
+        # Optimistic update: reflect state immediately
+        self._device.level = 0
+        self._device.status = False
+        self.async_write_ha_state()
+
         await self.coordinator.client.set_light_state(
             self._device.id, 0
         )
-        
-        # Request a coordinator update to get the new state
         await self.coordinator.async_request_refresh()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_LIGHT, []):
-            if device.id == self._device.id:
-                self._device = device
-                self._device_info = device  # Update _device_info for CrestronRoomEntity
-                break
-        
+        device = self.coordinator.data.get(DEVICE_TYPE_LIGHT, {}).get(self._device.id)
+        if device is not None:
+            self._device = device
+            self._device_info = device
         self.async_write_ha_state()
 
 
@@ -192,13 +189,8 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
     @property
     def brightness(self) -> Optional[int]:
         """Return the brightness of the light."""
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_LIGHT, []):
-            if device.id == self._device.id:
-                return int(CrestronClient.crestron_to_percentage(device.level) * 255 / 100)
-        
-        # If device not found, use the stored state
-        return int(CrestronClient.crestron_to_percentage(self._device.level) * 255 / 100)
+        device = self._get_device()
+        return int(CrestronClient.crestron_to_percentage(device.level) * 255 / 100)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
@@ -209,10 +201,13 @@ class CrestronHomeDimmer(CrestronHomeBaseLight):
         else:
             # Default to full brightness if not specified
             level = CrestronClient.percentage_to_crestron(100)
-        
+
+        # Optimistic update: reflect state immediately
+        self._device.level = level
+        self._device.status = True
+        self.async_write_ha_state()
+
         await self.coordinator.client.set_light_state(
             self._device.id, level
         )
-        
-        # Request a coordinator update to get the new state
         await self.coordinator.async_request_refresh()

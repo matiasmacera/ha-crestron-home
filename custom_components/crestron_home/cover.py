@@ -51,13 +51,13 @@ async def async_setup_entry(
     # Get all shade devices from the coordinator
     covers = []
     
-    for device in coordinator.data.get(DEVICE_TYPE_SHADE, []):
+    for device in coordinator.data.get(DEVICE_TYPE_SHADE, {}).values():
         cover = CrestronHomeShade(coordinator, device)
-        
+
         # Set hidden_by if device is marked as hidden
         if device.ha_hidden:
             cover._attr_hidden_by = "integration"
-            
+
         covers.append(cover)
     
     _LOGGER.debug("Adding %d cover entities", len(covers))
@@ -99,30 +99,23 @@ class CrestronHomeShade(CrestronRoomEntity, CoordinatorEntity, CoverEntity):
             suggested_area=device.room,
         )
     
+    def _get_device(self) -> CrestronDevice:
+        """Get the latest device data from coordinator via O(1) dict lookup."""
+        device = self.coordinator.data.get(DEVICE_TYPE_SHADE, {}).get(self._device.id)
+        return device if device is not None else self._device
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_SHADE, []):
-            if device.id == self._device.id:
-                return device.is_available
-        
-        # If device not found, use the stored state
-        return self._device.is_available
+        return self._get_device().is_available
 
     @property
     def current_cover_position(self) -> int:
         """Return current position of cover.
-        
+
         0 is closed, 100 is fully open.
         """
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_SHADE, []):
-            if device.id == self._device.id:
-                return CrestronClient.crestron_to_percentage(device.position)
-        
-        # If device not found, use the stored state
-        return CrestronClient.crestron_to_percentage(self._device.position)
+        return CrestronClient.crestron_to_percentage(self._get_device().position)
 
     @property
     def is_closed(self) -> bool:
@@ -131,42 +124,41 @@ class CrestronHomeShade(CrestronRoomEntity, CoordinatorEntity, CoverEntity):
 
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the cover."""
-        await self.coordinator.client.set_shade_position(
-            self._device.id, CrestronClient.percentage_to_crestron(100)
-        )
-        
-        # Request a coordinator update to get the new state
+        target = CrestronClient.percentage_to_crestron(100)
+        self._device.position = target
+        self.async_write_ha_state()
+
+        await self.coordinator.client.set_shade_position(self._device.id, target)
         await self.coordinator.async_request_refresh()
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the cover."""
-        await self.coordinator.client.set_shade_position(
-            self._device.id, 0
-        )
-        
-        # Request a coordinator update to get the new state
+        self._device.position = 0
+        self.async_write_ha_state()
+
+        await self.coordinator.client.set_shade_position(self._device.id, 0)
         await self.coordinator.async_request_refresh()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Stop the cover."""
-        # Get the current position and set it again to stop movement
-        current_position = self.current_cover_position
-        await self.coordinator.client.set_shade_position(
-            self._device.id, CrestronClient.percentage_to_crestron(current_position)
-        )
-        
-        # Request a coordinator update to get the new state
+        """Stop the cover by fetching the real-time position from the API."""
+        try:
+            shade_data = await self.coordinator.client.get_shade_state(self._device.id)
+            current_raw = shade_data.get("position", self._device.position)
+        except Exception:
+            current_raw = self._device.position
+
+        await self.coordinator.client.set_shade_position(self._device.id, current_raw)
         await self.coordinator.async_request_refresh()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the cover to a specific position."""
         if ATTR_POSITION in kwargs:
             position = kwargs[ATTR_POSITION]
-            await self.coordinator.client.set_shade_position(
-                self._device.id, CrestronClient.percentage_to_crestron(position)
-            )
-            
-            # Request a coordinator update to get the new state
+            target = CrestronClient.percentage_to_crestron(position)
+            self._device.position = target
+            self.async_write_ha_state()
+
+            await self.coordinator.client.set_shade_position(self._device.id, target)
             await self.coordinator.async_request_refresh()
 
     async def async_added_to_hass(self) -> None:
@@ -185,10 +177,8 @@ class CrestronHomeShade(CrestronRoomEntity, CoordinatorEntity, CoverEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_SHADE, []):
-            if device.id == self._device.id:
-                self._device = device
-                self._device_info = device  # Update _device_info for CrestronRoomEntity
-                break
-        
+        device = self.coordinator.data.get(DEVICE_TYPE_SHADE, {}).get(self._device.id)
+        if device is not None:
+            self._device = device
+            self._device_info = device
         self.async_write_ha_state()
