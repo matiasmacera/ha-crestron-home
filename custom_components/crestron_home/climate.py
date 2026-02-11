@@ -67,8 +67,15 @@ async def async_setup_entry(
         """Add thermostat entities from coordinator data."""
         thermostats = []
 
-        for device in coordinator.data.get(DEVICE_TYPE_THERMOSTAT, []):
+        _LOGGER.warning("CLIMATE SETUP: coordinator.data keys = %s", list(coordinator.data.keys()) if coordinator.data else "NO DATA")
+        _LOGGER.warning("CLIMATE SETUP: DEVICE_TYPE_THERMOSTAT = '%s'", DEVICE_TYPE_THERMOSTAT)
+        
+        thermostat_devices = coordinator.data.get(DEVICE_TYPE_THERMOSTAT, [])
+        _LOGGER.warning("CLIMATE SETUP: Found %d thermostat devices in coordinator.data", len(thermostat_devices))
+
+        for device in thermostat_devices:
             device_id = str(device.id)
+            _LOGGER.warning("CLIMATE SETUP: Processing device id=%s name=%s type=%s", device_id, device.name, device.type)
             if device_id in added_ids:
                 continue
 
