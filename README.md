@@ -1,10 +1,13 @@
-# Home Assistant Integration for Crestron Home
+# Home Assistant Integration for Crestron Home (Extended Fork)
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
-[![GitHub Release](https://img.shields.io/github/release/ruudruud/ha-crestron-home.svg)](https://github.com/ruudruud/ha-crestron-home/releases)
-[![GitHub License](https://img.shields.io/github/license/ruudruud/ha-crestron-home.svg)](LICENSE)
+[![GitHub License](https://img.shields.io/github/license/matiasmacera/ha-crestron-home.svg)](LICENSE)
 
-This repository contains a custom component for Home Assistant that integrates with Crestron Home systems. It allows you to control your Crestron Home devices (lights, shades, scenes) and monitor sensors through Home Assistant.
+> **Note**: This is a fork of the original [ha-crestron-home](https://github.com/ruudruud/ha-crestron-home) by [@ruudruud](https://github.com/ruudruud).
+> This fork extends the original integration with additional device support, such as **thermostats (climate control)**.
+> All credit for the original implementation goes to the original author.
+
+This repository contains a custom component for Home Assistant that integrates with Crestron Home systems. It allows you to control your Crestron Home devices (lights, shades, scenes, thermostats) and monitor sensors through Home Assistant.
 
 ## Overview
 
@@ -15,6 +18,7 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 - **Lights**: Control Crestron Home lights (dimmers with brightness control, switches with on/off)
 - **Shades**: Control Crestron Home shades (open, close, set position, stop movement)
 - **Scenes**: Activate Crestron Home scenes with room-based organization
+- **Thermostats** *(added in this fork)*: Climate control with temperature set point, fan modes, and operating modes
 - **Sensors**: Support for Crestron Home sensors:
   - Occupancy sensors (binary sensors for presence detection)
   - Door sensors (binary sensors with battery level reporting)
@@ -34,8 +38,9 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 | OccupancySensor         | Binary Sensor         | Occupancy detection | Tested |
 | DoorSensor              | Binary Sensor         | Door open/closed status, Battery level | Not tested |
 | PhotoSensor             | Sensor                | Light level measurement (lux) | Not tested |
+| Thermostat              | Climate               | Temperature, Fan modes, Operating modes | Tested |
 
-> **Note**: The OccupancySensor implementation has been thoroughly tested and works well with Crestron Home systems. The DoorSensor and PhotoSensor implementations are included but have not been tested with actual hardware yet.
+> **Note**: The OccupancySensor implementation has been thoroughly tested and works well with Crestron Home systems. The DoorSensor and PhotoSensor implementations are included but have not been tested with actual hardware yet. The Thermostat (Climate) support was added in this fork.
 
 ## Installation
 
@@ -43,11 +48,13 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 
 1. Make sure you have [HACS](https://hacs.xyz/) installed
 2. Go to HACS > Integrations > Click the three dots in the top right corner > Custom repositories
-3. Add the URL of this repository and select "Integration" as the category
+3. Add `https://github.com/matiasmacera/ha-crestron-home` and select "Integration" as the category
 4. Click "Add"
 5. Search for "Crestron Home" in the HACS Integrations page
 6. Click "Install"
 7. Restart Home Assistant
+
+> **Tip**: If you want the original version (without thermostat support), use the [original repository](https://github.com/ruudruud/ha-crestron-home) instead.
 
 ### Manual Installation
 
@@ -177,7 +184,8 @@ See the [Changelog](CHANGELOG.md) for a history of changes to this integration.
 
 ## Acknowledgments
 
-This project was inspired by and adapted from the [Homebridge Crestron Home plugin](https://github.com/evgolsh/homebridge-crestron-home).
+- This fork is based on the original work by [@ruudruud](https://github.com/ruudruud) in [ha-crestron-home](https://github.com/ruudruud/ha-crestron-home).
+- The original project was inspired by and adapted from the [Homebridge Crestron Home plugin](https://github.com/evgolsh/homebridge-crestron-home).
 
 ## Disclaimer
 
