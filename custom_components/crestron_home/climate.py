@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, List, Optional
 
 from homeassistant.components.climate import (
@@ -183,6 +184,8 @@ async def async_setup_entry(
 class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntity):
     """Representation of a Crestron Home thermostat (HZ-THSTAT)."""
 
+    _OPTIMISTIC_COOLDOWN = 2.0
+
     def __init__(
         self,
         coordinator: CrestronHomeDataUpdateCoordinator,
@@ -196,6 +199,7 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
         self._attr_unique_id = f"crestron_thermostat_{device.id}"
         self._attr_name = device.full_name
         self._attr_has_entity_name = False
+        self._last_command_time: float = 0.0
 
         # Determine temperature unit from raw_data
         # Crestron reports "DeciCelsius" or "DeciFahrenheit"
@@ -377,10 +381,10 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
             _LOGGER.warning("Unsupported HVAC mode: %s", hvac_mode)
             return
 
+        self._last_command_time = time.monotonic()
         await self.coordinator.client.set_thermostat_mode(
             self._device.id, crestron_mode
         )
-        await self.coordinator.async_request_refresh()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
@@ -392,17 +396,17 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
         device = self._get_device()
         sp_type = _get_setpoint_type(device.raw_data)
 
+        self._last_command_time = time.monotonic()
         await self.coordinator.client.set_thermostat_setpoint(
             self._device.id, sp_type, self._to_crestron_temp(temp)
         )
-        await self.coordinator.async_request_refresh()
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set new fan mode."""
+        self._last_command_time = time.monotonic()
         await self.coordinator.client.set_thermostat_fan_mode(
             self._device.id, fan_mode
         )
-        await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
         """Turn thermostat on (restore last non-Off mode or default to Heat)."""
@@ -430,6 +434,9 @@ class CrestronHomeThermostat(CrestronRoomEntity, CoordinatorEntity, ClimateEntit
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
+        if time.monotonic() - self._last_command_time < self._OPTIMISTIC_COOLDOWN:
+            return
+
         device = self.coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {}).get(self._device.id)
         if device is not None:
             self._device = device
