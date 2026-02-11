@@ -51,7 +51,7 @@ async def async_setup_entry(
     # Get all sensor devices from the coordinator
     sensors = []
     
-    for device in coordinator.data.get(DEVICE_TYPE_SENSOR, []):
+    for device in coordinator.data.get(DEVICE_TYPE_SENSOR, {}).values():
         if device.subtype == DEVICE_SUBTYPE_PHOTO_SENSOR:
             sensor = CrestronHomePhotoSensor(coordinator, device)
             
@@ -91,16 +91,15 @@ class CrestronHomeSensor(CrestronRoomEntity, CoordinatorEntity, SensorEntity):
             suggested_area=device.room,
         )
     
+    def _get_device(self) -> CrestronDevice:
+        """Get the latest device data from coordinator via O(1) dict lookup."""
+        device = self.coordinator.data.get(DEVICE_TYPE_SENSOR, {}).get(self._device.id)
+        return device if device is not None else self._device
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_SENSOR, []):
-            if device.id == self._device.id:
-                return device.is_available
-        
-        # If device not found, use the stored state
-        return self._device.is_available
+        return self._get_device().is_available
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
@@ -118,12 +117,10 @@ class CrestronHomeSensor(CrestronRoomEntity, CoordinatorEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_SENSOR, []):
-            if device.id == self._device.id:
-                self._device = device
-                self._device_info = device  # Update _device_info for CrestronRoomEntity
-                break
-        
+        device = self.coordinator.data.get(DEVICE_TYPE_SENSOR, {}).get(self._device.id)
+        if device is not None:
+            self._device = device
+            self._device_info = device
         self.async_write_ha_state()
 
 
@@ -144,11 +141,5 @@ class CrestronHomePhotoSensor(CrestronHomeSensor):
     @property
     def native_value(self) -> float:
         """Return the state of the sensor."""
-        # Find the device in the coordinator data
-        for device in self.coordinator.data.get(DEVICE_TYPE_SENSOR, []):
-            if device.id == self._device.id:
-                # Return the light level in lux
-                return float(device.value or device.level or 0)
-        
-        # If device not found, use the stored state
-        return float(self._device.value or self._device.level or 0)
+        device = self._get_device()
+        return float(device.value or device.level or 0)

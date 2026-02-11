@@ -20,11 +20,16 @@ CONF_TOKEN: Final = "token"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_ENABLED_DEVICE_TYPES: Final = "enabled_device_types"
 CONF_IGNORED_DEVICE_NAMES: Final = "ignored_device_names"
+CONF_VERIFY_SSL: Final = "verify_ssl"
 
 # Defaults
 DEFAULT_UPDATE_INTERVAL: Final = 15
 MIN_UPDATE_INTERVAL: Final = 10
 DEFAULT_IGNORED_DEVICE_NAMES: Final = []
+DEFAULT_VERIFY_SSL: Final = False
+
+# HTTP request timeout in seconds
+API_TIMEOUT: Final = 10
 
 # Device types
 DEVICE_TYPE_LIGHT: Final = "light"
@@ -48,6 +53,12 @@ DEVICE_SUBTYPE_THERMOSTAT: Final = "Thermostat"
 CRESTRON_API_PATH: Final = "/cws/api"
 CRESTRON_SESSION_TIMEOUT: Final = 9 * 60  # 9 minutes (Crestron session TTL is 10 minutes)
 CRESTRON_MAX_LEVEL: Final = 65535  # Maximum level value for Crestron devices
+
+# Sensor status strings
+PRESENCE_VACANT: Final = "Vacant"
+PRESENCE_UNAVAILABLE: Final = "Unavailable"
+DOOR_STATUS_OPEN: Final = "Open"
+DOOR_STATUS_CLOSED: Final = "Closed"
 
 # Startup message
 STARTUP_MESSAGE: Final = f"""

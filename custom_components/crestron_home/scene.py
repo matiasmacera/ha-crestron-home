@@ -44,13 +44,13 @@ async def async_setup_entry(
     # Get all scene devices from the coordinator
     scenes = []
     
-    for device in coordinator.data.get(DEVICE_TYPE_SCENE, []):
+    for device in coordinator.data.get(DEVICE_TYPE_SCENE, {}).values():
         scene = CrestronHomeScene(coordinator, device)
-        
+
         # Set hidden_by if device is marked as hidden
         if device.ha_hidden:
             scene._attr_hidden_by = "integration"
-            
+
         scenes.append(scene)
     
     _LOGGER.debug("Adding %d scene entities", len(scenes))
@@ -86,11 +86,10 @@ class CrestronHomeScene(CrestronRoomEntity, CoordinatorEntity, Scene):
             suggested_area=device.room,
         )
     
-    # Scenes are always available
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
-        return True
+        """Return if entity is available (check coordinator is connected)."""
+        return self.coordinator.last_update_success
 
     async def async_activate(self, **kwargs: Any) -> None:
         """Activate the scene."""
@@ -115,10 +114,8 @@ class CrestronHomeScene(CrestronRoomEntity, CoordinatorEntity, Scene):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        for device in self.coordinator.data.get(DEVICE_TYPE_SCENE, []):
-            if device.id == self._device.id:
-                self._device = device
-                self._device_info = device  # Update _device_info for CrestronRoomEntity
-                break
-        
+        device = self.coordinator.data.get(DEVICE_TYPE_SCENE, {}).get(self._device.id)
+        if device is not None:
+            self._device = device
+            self._device_info = device
         self.async_write_ha_state()
