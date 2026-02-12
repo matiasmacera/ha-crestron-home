@@ -1,10 +1,8 @@
 """API Client for Crestron Home."""
 import asyncio
 import logging
-import os
-import ssl
 import time
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 from aiohttp.client_exceptions import ClientConnectorError, ClientResponseError
@@ -49,76 +47,54 @@ class CrestronClient:
         self.last_login: float = 0
         self.rooms: List[Dict[str, Any]] = []
         self._verify_ssl = verify_ssl
+        # Single shared session for ALL requests (login + API) – avoids leaking sessions
         self._session = async_get_clientsession(hass, verify_ssl=verify_ssl)
-        self._ssl_context = None
         self._timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
 
-        # Add a lock for login to prevent multiple simultaneous login attempts
+        # Lock to prevent multiple simultaneous login attempts
         self._login_lock = asyncio.Lock()
-
-    async def _create_ssl_context(self) -> ssl.SSLContext:
-        """Create SSL context in executor to avoid blocking the event loop."""
-        verify_ssl = self._verify_ssl
-        def _create_context():
-            if verify_ssl:
-                return ssl.create_default_context()
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            return context
-
-        return await self.hass.async_add_executor_job(_create_context)
 
     async def login(self) -> None:
         """Login to the Crestron Home system."""
-        # Check if we need to login (session expires after 10 minutes)
         current_time = time.time()
         if self.auth_key and (current_time - self.last_login) < CRESTRON_SESSION_TIMEOUT:
             _LOGGER.debug("Session is still valid, skipping login")
             return
 
-        # Use the lock to prevent multiple simultaneous login attempts
         async with self._login_lock:
-            # Check again after acquiring the lock in case another task has already logged in
+            # Double-check after acquiring the lock
             current_time = time.time()
             if self.auth_key and (current_time - self.last_login) < CRESTRON_SESSION_TIMEOUT:
                 _LOGGER.debug("Session is still valid, skipping login (after lock)")
                 return
-                
-            _LOGGER.debug("Logging in to Crestron Home at %s", self.base_url)
-            
-            try:
-                # Create SSL context if not already created
-                if self._ssl_context is None:
-                    self._ssl_context = await self._create_ssl_context()
-                
-                # Make login request
-                async with aiohttp.ClientSession(
-                    connector=aiohttp.TCPConnector(ssl=self._ssl_context),
-                    timeout=self._timeout,
-                ) as session:
-                    headers = {
-                        "Accept": "application/json",
-                        "Crestron-RestAPI-AuthToken": self.api_token,
-                    }
 
-                    async with session.get(
-                        f"{self.base_url}/login",
-                        headers=headers,
-                    ) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                        
-                        self.auth_key = data.get("authkey")
-                        if not self.auth_key:
-                            raise CrestronAuthError("No authentication key received")
-                        
-                        self.last_login = current_time
-                        _LOGGER.info(
-                            "Successfully authenticated with Crestron Home, version: %s",
-                            data.get("version", "unknown"),
-                        )
-            
+            _LOGGER.debug("Logging in to Crestron Home at %s", self.base_url)
+
+            try:
+                headers = {
+                    "Accept": "application/json",
+                    "Crestron-RestAPI-AuthToken": self.api_token,
+                }
+
+                # Reuse the shared HA session (already configured with SSL settings)
+                async with self._session.get(
+                    f"{self.base_url}/login",
+                    headers=headers,
+                    timeout=self._timeout,
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+
+                    self.auth_key = data.get("authkey")
+                    if not self.auth_key:
+                        raise CrestronAuthError("No authentication key received")
+
+                    self.last_login = current_time
+                    _LOGGER.info(
+                        "Successfully authenticated with Crestron Home, version: %s",
+                        data.get("version", "unknown"),
+                    )
+
             except asyncio.TimeoutError as error:
                 _LOGGER.error("Login timed out after %ss", API_TIMEOUT)
                 raise CrestronConnectionError(
@@ -132,6 +108,9 @@ class CrestronClient:
             except ClientResponseError as error:
                 _LOGGER.error("Authentication error: %s", error)
                 raise CrestronAuthError(f"Authentication error: {error}") from error
+
+            except CrestronApiError:
+                raise
 
             except Exception as error:
                 _LOGGER.error("Unexpected error during login: %s", error)
@@ -179,19 +158,11 @@ class CrestronClient:
             _LOGGER.error("API request error: %s", error)
             raise CrestronApiError(f"API request error: {error}") from error
 
-    async def get_devices(self, enabled_types: List[str], ignored_device_names: List[str] = None) -> List[Dict[str, Any]]:
+    async def get_devices(self, enabled_types: List[str], ignored_device_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Get all devices from the Crestron Home system."""
         _LOGGER.debug("Getting devices from Crestron Home with enabled types: %s", enabled_types)
-        
-        # Get ignored device names from environment if not provided
         if ignored_device_names is None:
-            ignored_device_names_str = os.environ.get("IGNORED_DEVICE_NAMES", "")
-            if ignored_device_names_str:
-                ignored_device_names = [name.strip() for name in ignored_device_names_str.split(",")]
-            else:
-                ignored_device_names = []
-        
-        _LOGGER.debug("Using ignored device name patterns: %s", ignored_device_names)
+            ignored_device_names = []
         
         try:
             # Get rooms, scenes, devices, and shades in parallel
@@ -298,11 +269,6 @@ class CrestronClient:
             _LOGGER.error("Error getting devices: %s", error)
             raise CrestronApiError(f"Error getting devices: {error}") from error
 
-    async def get_device(self, device_id: int) -> Dict[str, Any]:
-        """Get a specific device from the Crestron Home system."""
-        response = await self._api_request("GET", f"/devices/{device_id}")
-        return response.get("devices", [{}])[0]
-
     async def get_shade_state(self, shade_id: int) -> Dict[str, Any]:
         """Get the state of a specific shade."""
         response = await self._api_request("GET", f"/shades/{shade_id}")
@@ -341,31 +307,10 @@ class CrestronClient:
         """Execute a scene."""
         await self._api_request("POST", f"/scenes/recall/{scene_id}", {})
 
-    async def get_scene(self, scene_id: int) -> Dict[str, Any]:
-        """Get a specific scene from the Crestron Home system."""
-        response = await self._api_request("GET", f"/scenes/{scene_id}")
-        return response.get("scenes", [{}])[0]
-
-    async def get_sensors(self, ignored_device_names: List[str] = None) -> List[Dict[str, Any]]:
+    async def get_sensors(self, ignored_device_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Get all sensors from the Crestron Home system."""
-        # Get ignored device names from environment if not provided
-        if ignored_device_names is None:
-            ignored_device_names_str = os.environ.get("IGNORED_DEVICE_NAMES", "")
-            if ignored_device_names_str:
-                ignored_device_names = [name.strip() for name in ignored_device_names_str.split(",")]
-            else:
-                ignored_device_names = []
-        
         response = await self._api_request("GET", "/sensors")
-        sensors = response.get("sensors", [])
-        
-        # Return all sensors without filtering
-        return sensors
-
-    async def get_sensor(self, sensor_id: int) -> Dict[str, Any]:
-        """Get a specific sensor from the Crestron Home system."""
-        response = await self._api_request("GET", f"/sensors/{sensor_id}")
-        return response.get("sensors", [{}])[0]
+        return response.get("sensors", [])
 
     async def get_rooms(self) -> List[Dict[str, Any]]:
         """Get all rooms from the Crestron Home system."""

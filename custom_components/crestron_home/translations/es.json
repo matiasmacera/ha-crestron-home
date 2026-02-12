@@ -1,0 +1,44 @@
+{
+  "title": "Crestron Home",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Conectar a Crestron Home",
+        "description": "Configura tu integracion Crestron Home",
+        "data": {
+          "host": "Host (direccion IP o nombre de host)",
+          "token": "Token de API",
+          "update_interval": "Intervalo de actualizacion (segundos)",
+          "enabled_device_types": "Tipos de dispositivos",
+          "ignored_device_names": "Nombres de dispositivos ignorados (opcional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No se pudo conectar a Crestron Home",
+      "invalid_auth": "Token de API invalido",
+      "unknown": "Error inesperado"
+    },
+    "abort": {
+      "already_configured": "El dispositivo ya esta configurado"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opciones de Crestron Home",
+        "description": "Configura tu integracion Crestron Home",
+        "data": {
+          "update_interval": "Intervalo de actualizacion (segundos)",
+          "enabled_device_types": "Tipos de dispositivos",
+          "ignored_device_names": "Nombres de dispositivos ignorados (opcional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "No se pudo conectar a Crestron Home",
+      "invalid_auth": "Token de API invalido",
+      "unknown": "Error inesperado"
+    }
+  }
+}

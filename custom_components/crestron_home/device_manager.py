@@ -1,9 +1,8 @@
 """Device manager for Crestron Home integration."""
 import asyncio
 import logging
-from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from homeassistant.core import HomeAssistant
 
@@ -26,6 +25,9 @@ from .const import (
 from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+# Fields compared for change detection (avoids full deepcopy)
+_CHANGE_FIELDS = ("status", "level", "position", "connection", "presence", "door_status")
 
 
 class CrestronDeviceManager:
@@ -74,19 +76,24 @@ class CrestronDeviceManager:
         hass: HomeAssistant,
         client: CrestronClient,
         enabled_device_types: List[str],
-        ignored_device_names: List[str] = None,
+        ignored_device_names: Optional[List[str]] = None,
     ) -> None:
         """Initialize the device manager."""
         self.hass = hass
         self.client = client
         self.enabled_device_types = enabled_device_types
         self.ignored_device_names = ignored_device_names or []
-        
-        # Device storage
-        self.devices: Dict[int, CrestronDevice] = {}
-        self.previous_devices: Dict[int, CrestronDevice] = {}
+
+        # Device storage – keys are composite "namespace:id" to avoid collisions
+        # between /devices, /sensors, and /thermostats sharing numeric IDs.
+        self.devices: Dict[str, CrestronDevice] = {}
+        # Lightweight snapshot for change detection (key → tuple of field values)
+        self._previous_snapshot: Dict[str, tuple] = {}
         self.last_poll_time: Optional[datetime] = None
-        
+
+        # Room lookup dict built once per poll (id → name), replaces linear scans
+        self._room_lookup: Dict[int, str] = {}
+
         # Mapping of Crestron device types to Home Assistant device types
         self.device_type_mapping = {
             "Dimmer": DEVICE_TYPE_LIGHT,
@@ -138,7 +145,12 @@ class CrestronDeviceManager:
         
         return False
 
-    async def poll_devices(self) -> Dict[str, List[CrestronDevice]]:
+    @staticmethod
+    def _device_snapshot_tuple(device: CrestronDevice) -> tuple:
+        """Return a lightweight tuple of fields used for change detection."""
+        return tuple(getattr(device, f) for f in _CHANGE_FIELDS)
+
+    async def poll_devices(self) -> Dict[str, Dict[int, CrestronDevice]]:
         """Poll devices from the Crestron Home system and update the device snapshot."""
         try:
             _LOGGER.debug(
@@ -146,57 +158,63 @@ class CrestronDeviceManager:
                 self.enabled_device_types,
                 self.ignored_device_names
             )
-            
-            # Store previous devices for future change detection
-            self.previous_devices = deepcopy(self.devices)
-            
+
+            # Save lightweight snapshot for change detection (no deepcopy)
+            prev_snapshot = {
+                k: self._device_snapshot_tuple(d) for k, d in self.devices.items()
+            }
+            prev_names = {k: d.full_name for k, d in self.devices.items()}
+
             # Get all devices, sensors, and thermostats from the Crestron Home system
             fetch_thermostats = DEVICE_TYPE_THERMOSTAT in self.enabled_device_types
-            
+
             coros = [
                 self.client.get_devices(self.enabled_device_types, self.ignored_device_names),
                 self.client.get_sensors(self.ignored_device_names),
             ]
             if fetch_thermostats:
                 coros.append(self.client.get_thermostats())
-            
+
             results = await asyncio.gather(*coros)
-            
+
             devices_data = results[0]
             sensors_data = results[1]
             thermostats_data = results[2] if fetch_thermostats else []
-            
+
             _LOGGER.debug("Received %d devices, %d sensors, and %d thermostats from API",
                          len(devices_data), len(sensors_data), len(thermostats_data))
-            
+
+            # Build room lookup dict for O(1) room name resolution
+            self._room_lookup = {
+                r.get("id"): r.get("name", "") for r in self.client.rooms
+            }
+
             # Process devices
             self._process_devices(devices_data)
-            
+
             # Process sensors
             self._process_sensors(sensors_data)
-            
+
             # Process thermostats
             if thermostats_data:
                 self._process_thermostats(thermostats_data)
-            
+
             # Update last poll time
             self.last_poll_time = datetime.now()
-            
-            # Change detection: log devices that changed since last poll
-            if self.previous_devices:
-                for dev_id, device in self.devices.items():
-                    prev = self.previous_devices.get(dev_id)
+
+            # Change detection using lightweight snapshots
+            if prev_snapshot:
+                for dev_key, device in self.devices.items():
+                    prev = prev_snapshot.get(dev_key)
                     if prev is None:
-                        _LOGGER.info("New device discovered: %s (ID: %d)", device.full_name, dev_id)
-                    elif (device.status != prev.status or device.level != prev.level
-                          or device.position != prev.position or device.connection != prev.connection
-                          or device.presence != prev.presence or device.door_status != prev.door_status):
-                        _LOGGER.debug("Device changed: %s (ID: %d)", device.full_name, dev_id)
+                        _LOGGER.info("New device discovered: %s (key: %s)", device.full_name, dev_key)
+                    elif self._device_snapshot_tuple(device) != prev:
+                        _LOGGER.debug("Device changed: %s (key: %s)", device.full_name, dev_key)
                 # Detect removed devices
-                for dev_id in self.previous_devices:
-                    if dev_id not in self.devices:
-                        _LOGGER.info("Device removed: %s (ID: %d)",
-                                     self.previous_devices[dev_id].full_name, dev_id)
+                for dev_key in prev_snapshot:
+                    if dev_key not in self.devices:
+                        _LOGGER.info("Device removed: %s (key: %s)",
+                                     prev_names.get(dev_key, "unknown"), dev_key)
 
             # Organize devices by type as dict[int, CrestronDevice] for O(1) lookups
             devices_by_type: Dict[str, Dict[int, CrestronDevice]] = {
@@ -212,17 +230,17 @@ class CrestronDeviceManager:
                 ha_device_type = self._get_ha_device_type(device.type, device.subtype)
                 if ha_device_type and ha_device_type in devices_by_type:
                     devices_by_type[ha_device_type][device.id] = device
-            
+
             # Log device counts by type
             for device_type, type_devices in devices_by_type.items():
                 _LOGGER.info("Found %d devices for %s platform", len(type_devices), device_type)
-            
+
             # Log detailed device information if debug mode is enabled
             if DEBUG_MODE:
                 self._log_device_snapshot()
-            
+
             return devices_by_type
-        
+
         except CrestronApiError as error:
             _LOGGER.error("Error polling devices: %s", error)
             raise
@@ -233,47 +251,39 @@ class CrestronDeviceManager:
             device_id = device_data.get("id")
             if not device_id:
                 continue
-                
+
             device_type = device_data.get("subType") or device_data.get("type", "")
-            ha_device_type = self._get_ha_device_type(device_type, device_type)
-            
-            # Process all devices regardless of type
-                
+            # Composite key avoids collisions with sensors/thermostats
+            dev_key = f"device:{device_id}"
+
             # Get room information
             room_id = device_data.get("roomId")
             room_name = device_data.get("roomName", "")
-            
+
             # Create or update device
-            if device_id in self.devices:
+            if dev_key in self.devices:
                 # Update existing device
-                device = self.devices[device_id]
+                device = self.devices[dev_key]
                 device.status = device_data.get("status", False)
                 device.level = device_data.get("level", 0)
-                
-                # Set appropriate connection status for update
+
                 # Scenes don't have a physical connection status
                 if device_type == "Scene":
                     device.connection = "n/a"
                 else:
                     device.connection = device_data.get("connectionStatus", "online")
-                
+
                 device.last_updated = datetime.now()
-                
+
                 # Update position for shades
                 if device_type == "Shade":
                     device.position = device_data.get("position", 0)
-                
-                # Update raw data
+
                 device.raw_data = device_data
-                
-                # Update Home Assistant parameters
                 self._update_ha_parameters(device)
             else:
-                # Set appropriate connection status
-                # Scenes don't have a physical connection status
                 connection_status = "n/a" if device_type == "Scene" else device_data.get("connectionStatus", "online")
-                
-                # Create new device
+
                 device = CrestronDevice(
                     id=device_id,
                     room=room_name,
@@ -287,11 +297,8 @@ class CrestronDeviceManager:
                     position=device_data.get("position", 0) if device_type == "Shade" else 0,
                     raw_data=device_data,
                 )
-                
-                # Add to devices dictionary
-                self.devices[device_id] = device
-                
-                # Update Home Assistant parameters
+
+                self.devices[dev_key] = device
                 self._update_ha_parameters(device)
 
     def _process_sensors(self, sensors_data: List[Dict[str, Any]]) -> None:
@@ -300,41 +307,21 @@ class CrestronDeviceManager:
             sensor_id = sensor_data.get("id")
             if not sensor_id:
                 continue
-                
+
             sensor_type = sensor_data.get("subType", "")
-            ha_device_type = None
-            
-            # Determine sensor type
-            if sensor_type == DEVICE_SUBTYPE_OCCUPANCY_SENSOR:
-                ha_device_type = DEVICE_TYPE_BINARY_SENSOR
-            elif sensor_type == DEVICE_SUBTYPE_DOOR_SENSOR:
-                ha_device_type = DEVICE_TYPE_BINARY_SENSOR
-            elif sensor_type == DEVICE_SUBTYPE_PHOTO_SENSOR:
-                ha_device_type = DEVICE_TYPE_SENSOR
-            
-            # Process all sensors regardless of type
-                
-            # Get room information
+            # Composite key avoids collisions with devices/thermostats
+            dev_key = f"sensor:{sensor_id}"
+
+            # Get room information via O(1) lookup
             room_id = sensor_data.get("roomId")
-            room_name = ""
-            if room_id:
-                room_name = next(
-                    (r.get("name", "") for r in self.client.rooms if r.get("id") == room_id),
-                    "",
-                )
-            
-            # Create sensor name
-            sensor_name = f"{room_name} {sensor_data.get('name', '')}".strip()
-            
-            # Process all sensors regardless of ignored patterns
-            
+            room_name = self._room_lookup.get(room_id, "") if room_id else ""
+
             # Create or update sensor
-            if sensor_id in self.devices:
-                # Update existing sensor
-                sensor = self.devices[sensor_id]
+            if dev_key in self.devices:
+                sensor = self.devices[dev_key]
                 sensor.connection = sensor_data.get("connectionStatus", "online")
                 sensor.last_updated = datetime.now()
-                
+
                 # Update sensor-specific properties
                 if sensor_type == DEVICE_SUBTYPE_OCCUPANCY_SENSOR:
                     sensor.presence = sensor_data.get("presence", "Unavailable")
@@ -346,14 +333,10 @@ class CrestronDeviceManager:
                 elif sensor_type == DEVICE_SUBTYPE_PHOTO_SENSOR:
                     sensor.value = sensor_data.get("level", 0)
                     sensor.level = sensor_data.get("level", 0)
-                
-                # Update raw data
+
                 sensor.raw_data = sensor_data
-                
-                # Update Home Assistant parameters
                 self._update_ha_parameters(sensor)
             else:
-                # Create new sensor
                 sensor = CrestronDevice(
                     id=sensor_id,
                     room=room_name,
@@ -364,8 +347,7 @@ class CrestronDeviceManager:
                     room_id=room_id,
                     raw_data=sensor_data,
                 )
-                
-                # Set sensor-specific properties
+
                 if sensor_type == DEVICE_SUBTYPE_OCCUPANCY_SENSOR:
                     sensor.presence = sensor_data.get("presence", "Unavailable")
                     sensor.status = sensor_data.get("presence", "Unavailable") not in ["Vacant", "Unavailable"]
@@ -376,11 +358,8 @@ class CrestronDeviceManager:
                 elif sensor_type == DEVICE_SUBTYPE_PHOTO_SENSOR:
                     sensor.value = sensor_data.get("level", 0)
                     sensor.level = sensor_data.get("level", 0)
-                
-                # Add to devices dictionary
-                self.devices[sensor_id] = sensor
-                
-                # Update Home Assistant parameters
+
+                self.devices[dev_key] = sensor
                 self._update_ha_parameters(sensor)
 
     def _process_thermostats(self, thermostats_data: List[Dict[str, Any]]) -> None:
@@ -391,17 +370,13 @@ class CrestronDeviceManager:
                 continue
 
             try:
+                # Composite key avoids collisions with devices/sensors
+                dev_key = f"thermostat:{tstat_id}"
                 room_id = tstat.get("roomId")
-                room_name = ""
-                if self.client.rooms:
-                    room_name = next(
-                        (r.get("name", "") for r in self.client.rooms if r.get("id") == room_id),
-                        "",
-                    )
+                room_name = self._room_lookup.get(room_id, "") if room_id else ""
 
-                if tstat_id in self.devices:
-                    # Update existing thermostat
-                    device = self.devices[tstat_id]
+                if dev_key in self.devices:
+                    device = self.devices[dev_key]
                     device.type = "Thermostat"
                     device.subtype = "Thermostat"
                     device.connection = tstat.get("connectionStatus", "online")
@@ -409,7 +384,6 @@ class CrestronDeviceManager:
                     device.last_updated = datetime.now()
                     self._update_ha_parameters(device)
                 else:
-                    # Create new thermostat device
                     device = CrestronDevice(
                         id=tstat_id,
                         room=room_name,
@@ -420,7 +394,7 @@ class CrestronDeviceManager:
                         room_id=room_id,
                         raw_data=tstat,
                     )
-                    self.devices[tstat_id] = device
+                    self.devices[dev_key] = device
                     self._update_ha_parameters(device)
 
                 _LOGGER.debug(
@@ -442,28 +416,6 @@ class CrestronDeviceManager:
             return DEVICE_TYPE_SCENE
         
         return ha_type
-
-    def get_device(self, device_id: int) -> Optional[CrestronDevice]:
-        """Get a device by ID."""
-        return self.devices.get(device_id)
-
-    def get_devices_by_type(self, device_type: str) -> List[CrestronDevice]:
-        """Get all devices of a specific type."""
-        return [
-            device for device in self.devices.values()
-            if self._get_ha_device_type(device.type, device.subtype) == device_type
-        ]
-
-    def get_devices_by_room(self, room_id: int) -> List[CrestronDevice]:
-        """Get all devices in a specific room."""
-        return [
-            device for device in self.devices.values()
-            if device.room_id == room_id
-        ]
-
-    def get_all_devices(self) -> List[CrestronDevice]:
-        """Get all devices."""
-        return list(self.devices.values())
 
     def _log_device_snapshot(self) -> None:
         """Log a detailed snapshot of all devices for debugging."""
@@ -527,62 +479,3 @@ class CrestronDeviceManager:
         _LOGGER.info("END OF DEVICE SNAPSHOT")
         _LOGGER.info("=" * 80)
 
-    def get_device_snapshot(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Get a snapshot of all devices for debugging."""
-        snapshot = {
-            "lights": [],
-            "shades": [],
-            "scenes": [],
-            "binary_sensors": [],
-            "sensors": [],
-            "thermostats": [],
-        }
-        
-        for device in self.devices.values():
-            ha_device_type = self._get_ha_device_type(device.type, device.subtype)
-            
-            device_data = {
-                "id": device.id,
-                "name": device.full_name,
-                "type": device.type,
-                "subtype": device.subtype,
-                "status": device.status,
-                "level": device.level,
-                "connection": device.connection,
-                "last_updated": device.last_updated.isoformat(),
-                "ha_state": device.ha_state,
-                "ha_hidden": device.ha_hidden,
-                "ha_reason": device.ha_reason,
-            }
-            
-            # Add device type specific data
-            if device.type == "Shade" or device.subtype == "Shade":
-                device_data["position"] = device.position
-                snapshot["shades"].append(device_data)
-            elif ha_device_type == DEVICE_TYPE_LIGHT:
-                snapshot["lights"].append(device_data)
-            elif ha_device_type == DEVICE_TYPE_SCENE:
-                snapshot["scenes"].append(device_data)
-            elif ha_device_type == DEVICE_TYPE_BINARY_SENSOR:
-                if device.subtype == DEVICE_SUBTYPE_OCCUPANCY_SENSOR:
-                    device_data["presence"] = device.presence
-                elif device.subtype == DEVICE_SUBTYPE_DOOR_SENSOR:
-                    device_data["door_status"] = device.door_status
-                    device_data["battery_level"] = device.battery_level
-                snapshot["binary_sensors"].append(device_data)
-            elif ha_device_type == DEVICE_TYPE_SENSOR:
-                if device.subtype == DEVICE_SUBTYPE_PHOTO_SENSOR:
-                    device_data["value"] = device.value
-                snapshot["sensors"].append(device_data)
-            elif ha_device_type == DEVICE_TYPE_THERMOSTAT:
-                device_data["mode"] = device.raw_data.get("currentMode") or device.raw_data.get("mode")
-                device_data["current_temperature"] = device.raw_data.get("currentTemperature")
-                # Handle both currentSetPoint (array) and setPoint (object) formats
-                csp = device.raw_data.get("currentSetPoint")
-                if isinstance(csp, list) and csp:
-                    device_data["setpoint"] = csp[0].get("temperature")
-                else:
-                    device_data["setpoint"] = (device.raw_data.get("setPoint") or {}).get("temperature")
-                snapshot["thermostats"].append(device_data)
-        
-        return snapshot
