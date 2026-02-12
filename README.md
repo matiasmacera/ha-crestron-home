@@ -1,5 +1,9 @@
 # Home Assistant Integration for Crestron Home (Extended Fork)
 
+<p align="center">
+  <img src="logo.png" alt="Crestron Home" width="200">
+</p>
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
 [![GitHub License](https://img.shields.io/github/license/matiasmacera/ha-crestron-home.svg)](LICENSE)
 
@@ -16,9 +20,9 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 ## Features
 
 - **Lights**: Control Crestron Home lights
-  - Dimmers with brightness control and **fade in/out transitions** (native HA transition support)
+  - Dimmers with brightness control, **fade in/out transitions**, and **command debouncing** (200ms)
   - Switches with on/off control
-- **Shades**: Control Crestron Home shades (open, close, set position, stop movement)
+- **Shades**: Control Crestron Home shades (open, close, set position with **debouncing**, stop movement)
 - **Scenes**: Activate Crestron Home scenes with room-based organization
 - **Thermostats**: Climate control with temperature set point, fan modes (Auto/On/Circulate), HVAC modes (Off/Heat/Cool/Auto), and HVAC action inference
 - **Sensors**: Support for Crestron Home sensors:
@@ -30,18 +34,20 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 - **Room-Based Organization**: Devices are automatically organized by room on the Home Assistant dashboard
 - **Device Name Filtering**: Wildcard pattern matching to hide unwanted devices (e.g., `%bathroom%`)
 - **Selective Platform Loading**: Choose which device types to enable/disable without reinstalling
-- **Optimistic State Updates**: Immediate UI feedback when controlling devices
+- **Optimistic State Updates**: Immediate UI feedback when controlling devices (2s cooldown)
+- **Command Debouncing**: Slider controls (brightness, shade position) are debounced at 200ms to prevent API flooding
 - **Parallel API Polling**: Devices, sensors, and thermostats are fetched concurrently for faster updates
-- **Change Detection**: Logs when devices change state or are added/removed between polls
+- **Change Detection**: Lightweight field-based change detection without deep copy overhead
 - **Robust Error Handling**: Proper session management, authentication retry, and connection error recovery
+- **Multi-language**: English and Spanish translations
 
 ### Supported Device Types
 
 | Crestron Device Subtype | Home Assistant Entity | Features | Testing Status |
 |-------------------------|------------------------|----------|----------------|
-| Dimmer                  | Light                  | On/Off, Brightness, Fade Transition | Tested |
+| Dimmer                  | Light                  | On/Off, Brightness, Fade Transition, Debounce | Tested |
 | Switch                  | Light                  | On/Off | Tested |
-| Shade                   | Cover                  | Open/Close, Position, Stop | Tested |
+| Shade                   | Cover                  | Open/Close, Position, Stop, Debounce | Tested |
 | Scene                   | Scene                  | Activate | Tested |
 | OccupancySensor         | Binary Sensor         | Occupancy detection | Tested |
 | DoorSensor              | Binary Sensor         | Door open/closed status, Battery level | Not tested |
@@ -161,16 +167,17 @@ custom_components/crestron_home/
 ├── __init__.py          # Integration setup, platform loading, reload logic
 ├── api.py               # Crestron REST API client (login, devices, sensors, thermostats)
 ├── config_flow.py       # Configuration UI (setup + options flow)
-├── const.py             # Constants and defaults
+├── const.py             # Constants, defaults, and device-type-to-platform mapping
 ├── coordinator.py       # DataUpdateCoordinator for periodic polling
-├── device_manager.py    # Device abstraction layer, change detection, snapshot
-├── entity.py            # Base entity mixin (room association)
+├── device_manager.py    # Device processing, change detection, composite key storage
+├── entity.py            # CrestronBaseEntity (shared boilerplate, optimistic cooldown, debouncing)
 ├── models.py            # CrestronDevice dataclass
 ├── manifest.json        # Integration metadata
-├── strings.json         # UI strings
-├── translations/        # Localization files
-├── light.py             # Light platform (dimmer + switch)
-├── cover.py             # Cover platform (shades)
+├── translations/        # Localization files (en, es)
+├── icon.png             # Integration icon (256x256)
+├── logo.png             # Integration logo (1024x1024)
+├── light.py             # Light platform (dimmer + switch with debouncing)
+├── cover.py             # Cover platform (shades with debouncing)
 ├── scene.py             # Scene platform
 ├── climate.py           # Climate platform (thermostats)
 ├── binary_sensor.py     # Binary sensor platform (occupancy, door)
@@ -179,33 +186,19 @@ custom_components/crestron_home/
 
 ### How It Works
 
-1. **API Client** (`api.py`): Handles HTTPS communication with the Crestron CWS server, including session-based authentication (sessions expire after 10 minutes) with automatic re-login.
+1. **API Client** (`api.py`): Handles HTTPS communication with the Crestron CWS server. Uses the shared Home Assistant aiohttp session for all requests (login + API) to avoid connection leaks. Sessions expire after 10 minutes with automatic re-login.
 
-2. **Device Manager** (`device_manager.py`): Maintains a consistent snapshot of all devices. Processes raw API data into `CrestronDevice` objects, applies visibility/availability logic, and detects changes between polls.
+2. **Device Manager** (`device_manager.py`): Maintains a consistent snapshot of all devices using composite keys (`device:N`, `sensor:N`, `thermostat:N`) to prevent ID collisions between different API namespaces. Uses lightweight tuple-based snapshots for change detection instead of deep copies. Room name resolution uses an O(1) dictionary lookup.
 
 3. **Coordinator** (`coordinator.py`): Uses Home Assistant's `DataUpdateCoordinator` pattern to poll devices at the configured interval. Returns a dictionary of devices organized by type with O(1) lookup by device ID.
 
-4. **Platform Entities**: Each platform (light, cover, scene, climate, sensor, binary_sensor) creates entities that read state from the coordinator and send commands through the API client. All entities use optimistic state updates for immediate UI feedback.
+4. **Base Entity** (`entity.py`): `CrestronBaseEntity` absorbs all duplicated boilerplate from the 6 platform files: device/entity setup, coordinator data lookup, hidden entity handling, optimistic cooldown (2s), and command debouncing (200ms). All platforms inherit from this class.
 
-5. **Device Model** (`models.py`): The `CrestronDevice` dataclass normalizes different device types into a common structure. Handles room name deduplication in `full_name` (avoids "Room Room Device" when the API already includes the room name).
+5. **Platform Entities**: Each platform (light, cover, scene, climate, sensor, binary_sensor) creates entities that read state from the coordinator and send commands through the API client. Slider-type controls (brightness, shade position) use debouncing to prevent flooding the Crestron API.
 
-### Debug Script
+6. **Device Model** (`models.py`): The `CrestronDevice` dataclass normalizes different device types into a common structure. Handles room name deduplication in `full_name` (avoids "Room Room Device" when the API already includes the room name).
 
-The integration includes a debug script (`crestron_debug.py`) that can be used to test the abstraction layer and view the device snapshot. This is useful for troubleshooting issues with the integration.
-
-To use the debug script:
-
-```bash
-python3 crestron_debug.py --host <crestron_host> --token <api_token> [--types light,shade,scene] [--ignore pattern1,pattern2] [--output snapshot.json] [--verbose]
-```
-
-Options:
-- `--host`: The IP address or hostname of your Crestron Home processor (required)
-- `--token`: The API token for your Crestron Home system (required)
-- `--types`: Comma-separated list of device types to include (default: all types)
-- `--ignore`: Comma-separated list of device name patterns to ignore
-- `--output`: Output file for the device snapshot (default: crestron_snapshot.json)
-- `--verbose`: Enable verbose logging
+7. **Platform Mapping** (`const.py`): A single `DEVICE_TYPE_TO_PLATFORM` dictionary serves as the source of truth for mapping device types to HA platforms, used consistently across setup, unload, and cleanup operations.
 
 ## Troubleshooting
 
@@ -251,6 +244,22 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v0.4.0 (2026-02-12)
+- **Performance Optimizations**:
+  - Replaced `deepcopy` with lightweight tuple-based snapshots for change detection (lower memory, faster polls)
+  - Fixed ID collision risk between devices/sensors/thermostats using composite keys (`device:N`, `sensor:N`, `thermostat:N`)
+  - Eliminated `aiohttp.ClientSession` leak on login — now reuses the shared HA session for all requests
+  - Room name resolution changed from O(N) linear scan to O(1) dictionary lookup
+- **Command Debouncing**: Added 200ms debounce for brightness sliders and shade position controls to prevent API flooding
+- **Code Quality**:
+  - Created `CrestronBaseEntity` base class absorbing all duplicated boilerplate from 6 platform files (~480 lines removed)
+  - Unified device-type-to-platform mapping into a single `DEVICE_TYPE_TO_PLATFORM` constant (was duplicated 4 times)
+  - Fixed `_device_info` naming collision with HA's `_attr_device_info` (renamed to `_crestron_device`)
+  - Removed dead code: unused imports, environment variable fallbacks, unused API methods
+  - Fixed mutable default `[]` to immutable `()` in constants
+- **Branding**: Added Crestron Home icon and logo files for HACS and HA
+- **Translations**: Added Spanish language support (`translations/es.json`)
+
 ### v0.3.0 (2026-02-11)
 - **Light Transitions**: Added native Home Assistant transition support for dimmable lights (fade in/out)
 - **Robustness Improvements**:
@@ -280,8 +289,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Disclaimer
 
-This integration is an independent project and is not affiliated with, endorsed by, or approved by Crestron Electronics, Inc. All product names, trademarks, and registered trademarks are the property of their respective owners. The use of these names, trademarks, and brands does not imply endorsement.​
+This integration is an independent project and is not affiliated with, endorsed by, or approved by Crestron Electronics, Inc. All product names, trademarks, and registered trademarks are the property of their respective owners. The use of these names, trademarks, and brands does not imply endorsement.
 
-This software is provided "as is," without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.​
+This software is provided "as is," without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 
-Users are responsible for ensuring that their use of this integration complies with all applicable laws and regulations, as well as any agreements they have with third parties, including Crestron Electronics, Inc. It is the user's responsibility to obtain any necessary permissions or licenses before using this integration.​
+Users are responsible for ensuring that their use of this integration complies with all applicable laws and regulations, as well as any agreements they have with third parties, including Crestron Electronics, Inc. It is the user's responsibility to obtain any necessary permissions or licenses before using this integration.
