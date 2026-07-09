@@ -212,10 +212,38 @@ class CrestronDeviceManager:
                 self._process_thermostats(thermostats_data, now, seen)
 
             # Prune devices that disappeared, but only within namespaces that
-            # were actually polled (thermostats are conditional).
+            # were actually polled (thermostats are conditional) AND whose
+            # raw fetch this poll wasn't suspiciously empty. api.py silently
+            # returns [] for a malformed/unexpected-shape HTTP-200 body, so a
+            # single bad response must not be read as "the user deleted every
+            # device" and mass-prune a whole namespace.
+            known_namespaces = {k.split(":", 1)[0] for k in self.devices}
             polled_namespaces = {"device", "scene", "sensor"}
             if fetch_thermostats:
                 polled_namespaces.add("thermostat")
+
+            if not devices_data and known_namespaces & {"device", "scene"}:
+                _LOGGER.warning(
+                    "Devices/scenes API returned no results this poll but "
+                    "devices were previously known; skipping pruning for "
+                    "devices and scenes this poll"
+                )
+                polled_namespaces -= {"device", "scene"}
+            if not sensors_data and "sensor" in known_namespaces:
+                _LOGGER.warning(
+                    "Sensors API returned no results this poll but sensors "
+                    "were previously known; skipping pruning for sensors "
+                    "this poll"
+                )
+                polled_namespaces.discard("sensor")
+            if fetch_thermostats and not thermostats_data and "thermostat" in known_namespaces:
+                _LOGGER.warning(
+                    "Thermostats API returned no results this poll but "
+                    "thermostats were previously known; skipping pruning for "
+                    "thermostats this poll"
+                )
+                polled_namespaces.discard("thermostat")
+
             stale_keys = [
                 k for k in self.devices
                 if k not in seen and k.split(":", 1)[0] in polled_namespaces

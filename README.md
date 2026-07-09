@@ -152,7 +152,7 @@ Dimmable lights support native Home Assistant transitions for smooth fade effect
 
 ## Requirements
 
-- **Home Assistant Core**: Version 2024.2 or newer
+- **Home Assistant Core**: Version 2024.8 or newer (required for the coordinator's `config_entry` parameter)
 - **Python**: Version 3.11 or newer
 - **Dependencies**: None beyond Home Assistant itself (uses HA's bundled aiohttp)
 - **Hardware Requirements**:
@@ -246,6 +246,17 @@ Contributions are welcome! Please open an issue or pull request on GitHub.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### v0.5.1
+- **Correctness Fixes** (found via an extensive multi-angle review of v0.5.0, each independently verified against the actual code and current Home Assistant core source):
+  - Fixed a state-sync bug where a command landing inside the 2s optimistic-cooldown window could be silently dropped and never reconciled, leaving an entity (worst case: a thermostat) stuck showing the pre-command state indefinitely
+  - The options-flow reload now goes through Home Assistant's own `config_entries.async_reload()` instead of manually re-running setup/unload. The manual approach skipped unload callbacks (leaking a duplicate coordinator that kept polling in the background) and could hard-fail entirely on current Home Assistant versions, which require setup to go through the framework
+  - The coordinator now shuts down cleanly when its config entry is unloaded, instead of continuing to poll in the background
+  - The coordinator is now created with an explicit `config_entry` reference, matching current Home Assistant requirements for `DataUpdateCoordinator` (minimum supported HA version raised to 2024.8 accordingly)
+  - A transient HTTP error during login (e.g. the Crestron processor rebooting) no longer gets misclassified as an authentication failure and no longer permanently stops polling — only real 401/403 responses trigger re-authentication
+  - Fixed a crash when hiding filtered-out devices: the entity registry now receives the correct enum value instead of a raw string
+  - Device pruning no longer mass-removes an entire category (e.g. all lights) if the Crestron API returns a single empty/malformed response; a namespace is only pruned when its fetch actually came back with data
+  - Adding the integration a second time for the same host now aborts cleanly instead of creating a conflicting duplicate entry
 
 ### v0.5.0 (2026-07-09)
 - **Correctness Fixes**:

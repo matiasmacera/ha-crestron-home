@@ -3,6 +3,7 @@ from datetime import timedelta
 import logging
 from typing import Dict, List, Optional
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import (
@@ -24,6 +25,7 @@ class CrestronHomeDataUpdateCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: ConfigEntry,
         client: CrestronClient,
         update_interval: int,
         enabled_device_types: List[str],
@@ -42,6 +44,7 @@ class CrestronHomeDataUpdateCoordinator(DataUpdateCoordinator):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=update_interval),
         )

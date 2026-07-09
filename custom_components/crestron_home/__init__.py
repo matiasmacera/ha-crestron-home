@@ -68,7 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     coordinator = CrestronHomeDataUpdateCoordinator(
-        hass, client, update_interval, enabled_device_types, ignored_device_names
+        hass, entry, client, update_interval, enabled_device_types, ignored_device_names
     )
 
     try:
@@ -160,16 +160,14 @@ def _async_migrate_device_identifiers(hass: HomeAssistant, entry: ConfigEntry) -
             )
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry, platform_override: list = None) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    if platform_override is not None:
-        enabled_platforms = platform_override
-    else:
-        enabled_device_types = entry.data.get(CONF_ENABLED_DEVICE_TYPES, [])
-        enabled_platforms = _platforms_for_device_types(enabled_device_types)
+    enabled_device_types = entry.data.get(CONF_ENABLED_DEVICE_TYPES, [])
+    enabled_platforms = _platforms_for_device_types(enabled_device_types)
 
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, enabled_platforms):
-        hass.data[DOMAIN].pop(entry.entry_id)
+        coordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        await coordinator.async_shutdown()
 
     return unload_ok
 
@@ -196,41 +194,41 @@ async def _async_clean_entity_registry(
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
-    old_enabled_types = set(entry.data.get(CONF_ENABLED_DEVICE_TYPES, []))
+    """Reload the config entry when options change.
 
-    if not entry.options:
-        await async_unload_entry(hass, entry)
-        await async_setup_entry(hass, entry)
-        return
+    Two-phase via this same listener: when entry.options is non-empty (a
+    fresh options-flow submission), diff it against the last-applied config
+    in entry.data, clean up any disabled device types, then merge options
+    into data and clear entry.options. That async_update_entry call is
+    itself a data change, so HA re-fires this listener; the second pass
+    finds entry.options empty and performs the actual reload. Splitting it
+    this way means exactly one reload happens per options save (merging and
+    reloading in the same pass would double-fire: our own async_update_entry
+    schedules a second listener call that would reload again).
 
-    new_enabled_types = set(entry.options.get(CONF_ENABLED_DEVICE_TYPES, old_enabled_types))
-    new_update_interval = entry.options.get(CONF_UPDATE_INTERVAL, entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
-    new_ignored_device_names = entry.options.get(CONF_IGNORED_DEVICE_NAMES, entry.data.get(CONF_IGNORED_DEVICE_NAMES, DEFAULT_IGNORED_DEVICE_NAMES))
-
-    disabled_types = [t for t in old_enabled_types if t not in new_enabled_types]
-
-    _LOGGER.debug(
-        "Reloading entry. Update interval: %s, New types: %s, Ignored names: %s, Disabled: %s",
-        new_update_interval, new_enabled_types, new_ignored_device_names, disabled_types
-    )
-
-    if disabled_types:
-        await _async_clean_entity_registry(hass, entry, disabled_types)
-
-    old_platforms = _platforms_for_device_types(old_enabled_types)
-
+    The reload itself goes through hass.config_entries.async_reload, which
+    serializes on the entry's setup lock and correctly runs
+    entry.async_on_unload callbacks — a manual async_unload_entry +
+    async_setup_entry call here skipped those callbacks and could crash
+    coordinator startup on modern HA, which requires setup to go through
+    the framework.
+    """
     if entry.options:
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, **entry.options}
+        old_enabled_types = set(entry.data.get(CONF_ENABLED_DEVICE_TYPES, []))
+        new_enabled_types = set(entry.options.get(CONF_ENABLED_DEVICE_TYPES, old_enabled_types))
+        disabled_types = [t for t in old_enabled_types if t not in new_enabled_types]
+
+        _LOGGER.debug(
+            "Applying new options. New types: %s, Disabled: %s",
+            new_enabled_types, disabled_types,
         )
 
-    if await async_unload_entry(hass, entry, platform_override=old_platforms):
-        _LOGGER.debug("Successfully unloaded entry")
-    else:
-        _LOGGER.warning("Failed to unload entry completely")
-        if entry.entry_id in hass.data.get(DOMAIN, {}):
-            _LOGGER.debug("Forcing cleanup of entry data")
-            hass.data[DOMAIN].pop(entry.entry_id, None)
+        if disabled_types:
+            await _async_clean_entity_registry(hass, entry, disabled_types)
 
-    await async_setup_entry(hass, entry)
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, **entry.options}, options={}
+        )
+        return
+
+    await hass.config_entries.async_reload(entry.entry_id)

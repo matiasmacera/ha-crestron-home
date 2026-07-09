@@ -120,6 +120,7 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: Dict[str, str] = {}
 
         if user_input is not None:
+            self._async_abort_entries_match({CONF_HOST: user_input[CONF_HOST]})
             try:
                 info = await validate_input(self.hass, user_input)
 

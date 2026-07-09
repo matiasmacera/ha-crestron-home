@@ -108,8 +108,13 @@ class CrestronClient:
                 raise CrestronConnectionError(f"Connection error: {error}") from error
 
             except ClientResponseError as error:
-                _LOGGER.error("Authentication error: %s", error)
-                raise CrestronAuthError(f"Authentication error: {error}") from error
+                if error.status in (401, 403):
+                    _LOGGER.error("Authentication error: %s", error)
+                    raise CrestronAuthError(f"Authentication error: {error}") from error
+                # A non-auth HTTP error (e.g. transient 5xx while the
+                # processor reboots) should not be treated as a bad token
+                _LOGGER.error("Login HTTP error: %s", error)
+                raise CrestronConnectionError(f"Login HTTP error: {error}") from error
 
             except CrestronApiError:
                 raise
