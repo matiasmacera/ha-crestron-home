@@ -56,10 +56,25 @@ DEVICE_SUBTYPE_PHOTO_SENSOR: Final = "PhotoSensor"
 DEVICE_SUBTYPE_DOOR_SENSOR: Final = "DoorSensor"
 DEVICE_SUBTYPE_THERMOSTAT: Final = "Thermostat"
 
+# Single source of truth: Crestron subtype → integration device type
+# (previously duplicated in api.py and device_manager.py)
+CRESTRON_TYPE_TO_DEVICE_TYPE: Final[Dict[str, str]] = {
+    DEVICE_SUBTYPE_DIMMER: DEVICE_TYPE_LIGHT,
+    DEVICE_SUBTYPE_SWITCH: DEVICE_TYPE_LIGHT,
+    DEVICE_SUBTYPE_SHADE: DEVICE_TYPE_SHADE,
+    DEVICE_SUBTYPE_SCENE: DEVICE_TYPE_SCENE,
+    DEVICE_SUBTYPE_OCCUPANCY_SENSOR: DEVICE_TYPE_BINARY_SENSOR,
+    DEVICE_SUBTYPE_DOOR_SENSOR: DEVICE_TYPE_BINARY_SENSOR,
+    DEVICE_SUBTYPE_PHOTO_SENSOR: DEVICE_TYPE_SENSOR,
+    DEVICE_SUBTYPE_THERMOSTAT: DEVICE_TYPE_THERMOSTAT,
+}
+
 # Crestron API constants
 CRESTRON_API_PATH: Final = "/cws/api"
 CRESTRON_SESSION_TIMEOUT: Final = 9 * 60  # 9 minutes (Crestron session TTL is 10 minutes)
 CRESTRON_MAX_LEVEL: Final = 65535  # Maximum level value for Crestron devices
+# Rooms rarely change: refetch /rooms only every N polls (or when an unknown roomId shows up)
+ROOMS_REFRESH_POLLS: Final = 20
 
 # Sensor status strings
 PRESENCE_VACANT: Final = "Vacant"

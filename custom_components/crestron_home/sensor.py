@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -20,7 +21,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import CrestronHomeDataUpdateCoordinator
-from .entity import CrestronBaseEntity
+from .entity import CrestronBaseEntity, async_setup_platform_entities
 from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,16 +40,16 @@ async def async_setup_entry(
         _LOGGER.debug("Sensor platform not enabled, skipping setup")
         return
 
-    sensors = []
-    for device in coordinator.data.get(DEVICE_TYPE_SENSOR, {}).values():
+    def _create_sensor(
+        coordinator, device: CrestronDevice
+    ) -> Optional[CrestronBaseEntity]:
         if device.subtype == DEVICE_SUBTYPE_PHOTO_SENSOR:
-            sensor = CrestronHomePhotoSensor(coordinator, device)
-            if device.ha_hidden:
-                sensor._attr_hidden_by = "integration"
-            sensors.append(sensor)
+            return CrestronHomePhotoSensor(coordinator, device)
+        return None
 
-    _LOGGER.debug("Adding %d sensor entities", len(sensors))
-    async_add_entities(sensors)
+    async_setup_platform_entities(
+        entry, coordinator, async_add_entities, DEVICE_TYPE_SENSOR, _create_sensor
+    )
 
 
 class CrestronHomeSensor(CrestronBaseEntity, SensorEntity):
@@ -56,21 +57,13 @@ class CrestronHomeSensor(CrestronBaseEntity, SensorEntity):
 
     _device_type_key = DEVICE_TYPE_SENSOR
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, device)
-        self._attr_unique_id = f"crestron_sensor_{device.id}"
-
 
 class CrestronHomePhotoSensor(CrestronHomeSensor):
     """Representation of a Crestron Home photosensor."""
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the photosensor."""
-        super().__init__(coordinator, device)
-        self._attr_device_class = SensorDeviceClass.ILLUMINANCE
-        self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_native_unit_of_measurement = LIGHT_LUX
+    _attr_device_class = SensorDeviceClass.ILLUMINANCE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = LIGHT_LUX
 
     @property
     def native_value(self) -> float:

@@ -12,18 +12,16 @@ from homeassistant.components.climate import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_ENABLED_DEVICE_TYPES,
     DEVICE_TYPE_THERMOSTAT,
     DOMAIN,
-    MANUFACTURER,
 )
 from .coordinator import CrestronHomeDataUpdateCoordinator
-from .entity import CrestronBaseEntity
+from .entity import CrestronBaseEntity, async_setup_platform_entities
 from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -120,37 +118,12 @@ async def async_setup_entry(
         _LOGGER.debug("Thermostat platform not enabled, skipping setup")
         return
 
-    added_ids: set[str] = set()
-
-    @callback
-    def _async_add_thermostats() -> None:
-        """Add thermostat entities from coordinator data."""
-        thermostats = []
-
-        thermostat_devices = coordinator.data.get(DEVICE_TYPE_THERMOSTAT, {})
-        _LOGGER.debug("CLIMATE SETUP: Found %d thermostat devices", len(thermostat_devices))
-
-        for device in thermostat_devices.values():
-            device_id = str(device.id)
-            if device_id in added_ids:
-                continue
-
-            thermostat = CrestronHomeThermostat(coordinator, device)
-
-            if device.ha_hidden:
-                thermostat._attr_hidden_by = "integration"
-
-            thermostats.append(thermostat)
-            added_ids.add(device_id)
-
-        if thermostats:
-            _LOGGER.info("Adding %d thermostat entities", len(thermostats))
-            async_add_entities(thermostats)
-
-    _async_add_thermostats()
-
-    entry.async_on_unload(
-        coordinator.async_add_listener(_async_add_thermostats)
+    async_setup_platform_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        DEVICE_TYPE_THERMOSTAT,
+        CrestronHomeThermostat,
     )
 
 
@@ -167,7 +140,6 @@ class CrestronHomeThermostat(CrestronBaseEntity, ClimateEntity):
     ) -> None:
         """Initialize the thermostat."""
         super().__init__(coordinator, device)
-        self._attr_unique_id = f"crestron_thermostat_{device.id}"
 
         # Determine temperature unit from raw_data
         units = device.raw_data.get("temperatureUnits", "DeciCelsius")
@@ -213,15 +185,8 @@ class CrestronHomeThermostat(CrestronBaseEntity, ClimateEntity):
             features |= ClimateEntityFeature.FAN_MODE
         self._attr_supported_features = features
 
-        # Device info
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, f"thermostat_{device.id}")},
-            name=device.full_name,
-            manufacturer=MANUFACTURER,
-            model="HZ-THSTAT",
-            via_device=(DOMAIN, coordinator.client.host),
-            suggested_area=device.room,
-        )
+        # Base identifiers already namespace as thermostat_{id}; only the model differs
+        self._attr_device_info["model"] = "HZ-THSTAT"
 
     # -- Temperature conversion helpers --
 

@@ -17,12 +17,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .api import CrestronClient
 from .const import (
     CONF_ENABLED_DEVICE_TYPES,
+    CRESTRON_MAX_LEVEL,
     DEVICE_TYPE_SHADE,
     DOMAIN,
 )
 from .coordinator import CrestronHomeDataUpdateCoordinator
-from .entity import CrestronBaseEntity
-from .models import CrestronDevice
+from .entity import CrestronBaseEntity, async_setup_platform_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,15 +40,9 @@ async def async_setup_entry(
         _LOGGER.debug("Shade platform not enabled, skipping setup")
         return
 
-    covers = []
-    for device in coordinator.data.get(DEVICE_TYPE_SHADE, {}).values():
-        cover = CrestronHomeShade(coordinator, device)
-        if device.ha_hidden:
-            cover._attr_hidden_by = "integration"
-        covers.append(cover)
-
-    _LOGGER.debug("Adding %d cover entities", len(covers))
-    async_add_entities(covers)
+    async_setup_platform_entities(
+        entry, coordinator, async_add_entities, DEVICE_TYPE_SHADE, CrestronHomeShade
+    )
 
 
 class CrestronHomeShade(CrestronBaseEntity, CoverEntity):
@@ -57,17 +51,13 @@ class CrestronHomeShade(CrestronBaseEntity, CoverEntity):
     _device_type_key = DEVICE_TYPE_SHADE
     _supports_optimistic = True
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the shade."""
-        super().__init__(coordinator, device)
-        self._attr_unique_id = f"crestron_shade_{device.id}"
-        self._attr_device_class = CoverDeviceClass.SHADE
-        self._attr_supported_features = (
-            CoverEntityFeature.OPEN
-            | CoverEntityFeature.CLOSE
-            | CoverEntityFeature.STOP
-            | CoverEntityFeature.SET_POSITION
-        )
+    _attr_device_class = CoverDeviceClass.SHADE
+    _attr_supported_features = (
+        CoverEntityFeature.OPEN
+        | CoverEntityFeature.CLOSE
+        | CoverEntityFeature.STOP
+        | CoverEntityFeature.SET_POSITION
+    )
 
     @property
     def current_cover_position(self) -> int:
@@ -81,12 +71,13 @@ class CrestronHomeShade(CrestronBaseEntity, CoverEntity):
 
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the cover."""
-        target = CrestronClient.percentage_to_crestron(100)
         self._mark_optimistic()
-        self._crestron_device.position = target
+        self._crestron_device.position = CRESTRON_MAX_LEVEL
         self.async_write_ha_state()
 
-        await self.coordinator.client.set_shade_position(self._crestron_device.id, target)
+        await self.coordinator.client.set_shade_position(
+            self._crestron_device.id, CRESTRON_MAX_LEVEL
+        )
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the cover."""

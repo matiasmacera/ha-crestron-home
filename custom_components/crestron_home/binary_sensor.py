@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -23,7 +23,7 @@ from .const import (
     PRESENCE_VACANT,
 )
 from .coordinator import CrestronHomeDataUpdateCoordinator
-from .entity import CrestronBaseEntity
+from .entity import CrestronBaseEntity, async_setup_platform_entities
 from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,22 +42,22 @@ async def async_setup_entry(
         _LOGGER.debug("Binary sensor platform not enabled, skipping setup")
         return
 
-    binary_sensors = []
-    for device in coordinator.data.get(DEVICE_TYPE_BINARY_SENSOR, {}).values():
+    def _create_binary_sensor(
+        coordinator, device: CrestronDevice
+    ) -> Optional[CrestronBaseEntity]:
         if device.subtype == DEVICE_SUBTYPE_OCCUPANCY_SENSOR:
-            sensor = CrestronHomeOccupancySensor(coordinator, device)
-        elif device.subtype == DEVICE_SUBTYPE_DOOR_SENSOR:
-            sensor = CrestronHomeDoorSensor(coordinator, device)
-        else:
-            continue
+            return CrestronHomeOccupancySensor(coordinator, device)
+        if device.subtype == DEVICE_SUBTYPE_DOOR_SENSOR:
+            return CrestronHomeDoorSensor(coordinator, device)
+        return None
 
-        if device.ha_hidden:
-            sensor._attr_hidden_by = "integration"
-
-        binary_sensors.append(sensor)
-
-    _LOGGER.debug("Adding %d binary sensor entities", len(binary_sensors))
-    async_add_entities(binary_sensors)
+    async_setup_platform_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        DEVICE_TYPE_BINARY_SENSOR,
+        _create_binary_sensor,
+    )
 
 
 class CrestronHomeBinarySensor(CrestronBaseEntity, BinarySensorEntity):
@@ -65,19 +65,11 @@ class CrestronHomeBinarySensor(CrestronBaseEntity, BinarySensorEntity):
 
     _device_type_key = DEVICE_TYPE_BINARY_SENSOR
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the binary sensor."""
-        super().__init__(coordinator, device)
-        self._attr_unique_id = f"crestron_binary_sensor_{device.id}"
-
 
 class CrestronHomeOccupancySensor(CrestronHomeBinarySensor):
     """Representation of a Crestron Home occupancy sensor."""
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the occupancy sensor."""
-        super().__init__(coordinator, device)
-        self._attr_device_class = BinarySensorDeviceClass.OCCUPANCY
+    _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
 
     @property
     def is_on(self) -> bool:
@@ -89,10 +81,7 @@ class CrestronHomeOccupancySensor(CrestronHomeBinarySensor):
 class CrestronHomeDoorSensor(CrestronHomeBinarySensor):
     """Representation of a Crestron Home door sensor."""
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the door sensor."""
-        super().__init__(coordinator, device)
-        self._attr_device_class = BinarySensorDeviceClass.DOOR
+    _attr_device_class = BinarySensorDeviceClass.DOOR
 
     @property
     def is_on(self) -> bool:

@@ -15,6 +15,7 @@ from .const import (
     CRESTRON_API_PATH,
     CRESTRON_MAX_LEVEL,
     CRESTRON_SESSION_TIMEOUT,
+    ROOMS_REFRESH_POLLS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class CrestronClient:
         self.auth_key: Optional[str] = None
         self.last_login: float = 0
         self.rooms: List[Dict[str, Any]] = []
+        self._polls_since_rooms: int = 0
         self._verify_ssl = verify_ssl
         # Single shared session for ALL requests (login + API) – avoids leaking sessions
         self._session = async_get_clientsession(hass, verify_ssl=verify_ssl)
@@ -117,19 +119,23 @@ class CrestronClient:
                 raise CrestronApiError(f"Unexpected error: {error}") from error
 
     async def _api_request(
-        self, method: str, endpoint: str, data: Optional[Dict[str, Any]] = None
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        _retry_on_auth: bool = True,
     ) -> Dict[str, Any]:
         """Make an API request to the Crestron Home system."""
         await self.login()
-        
+
         if not self.auth_key:
             raise CrestronAuthError("Not authenticated")
-        
+
         url = f"{self.base_url}{endpoint}"
         headers = {
             "Crestron-RestAPI-AuthKey": self.auth_key,
         }
-        
+
         try:
             async with self._session.request(
                 method, url, headers=headers, json=data,
@@ -145,9 +151,17 @@ class CrestronClient:
 
         except ClientResponseError as error:
             if error.status == 401:
-                # Force re-authentication on next request
+                # Session expired server-side: re-authenticate and retry once
                 self.auth_key = None
                 self.last_login = 0
+                if _retry_on_auth:
+                    _LOGGER.debug(
+                        "Session expired (401) on %s, re-authenticating and retrying",
+                        endpoint,
+                    )
+                    return await self._api_request(
+                        method, endpoint, data, _retry_on_auth=False
+                    )
                 raise CrestronAuthError("Authentication expired") from error
             raise CrestronApiError(f"API error: {error}") from error
 
@@ -158,62 +172,70 @@ class CrestronClient:
             _LOGGER.error("API request error: %s", error)
             raise CrestronApiError(f"API request error: {error}") from error
 
-    async def get_devices(self, enabled_types: List[str], ignored_device_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Get all devices from the Crestron Home system."""
-        _LOGGER.debug("Getting devices from Crestron Home with enabled types: %s", enabled_types)
-        if ignored_device_names is None:
-            ignored_device_names = []
-        
+    async def _refresh_rooms(self) -> None:
+        """Fetch the room list and reset the refresh counter."""
+        rooms_data = await self._api_request("GET", "/rooms")
+        self.rooms = rooms_data.get("rooms", [])
+        self._polls_since_rooms = 0
+
+    async def get_devices(self) -> List[Dict[str, Any]]:
+        """Get all devices and scenes from the Crestron Home system."""
         try:
-            # Get rooms, scenes, devices, and shades in parallel
-            results = await asyncio.gather(
-                self._api_request("GET", "/rooms"),
+            # Rooms rarely change: only refetch every ROOMS_REFRESH_POLLS polls,
+            # or immediately below if an unknown roomId shows up.
+            self._polls_since_rooms += 1
+            fetch_rooms = not self.rooms or self._polls_since_rooms >= ROOMS_REFRESH_POLLS
+
+            coros = [
                 self._api_request("GET", "/scenes"),
                 self._api_request("GET", "/devices"),
                 self._api_request("GET", "/shades"),
+            ]
+            if fetch_rooms:
+                coros.append(self._api_request("GET", "/rooms"))
+
+            results = await asyncio.gather(*coros)
+            scenes_data, devices_data, shades_data = results[0], results[1], results[2]
+            if fetch_rooms:
+                self.rooms = results[3].get("rooms", [])
+                self._polls_since_rooms = 0
+
+            raw_devices = devices_data.get("devices", [])
+            raw_scenes = scenes_data.get("scenes", [])
+
+            # O(1) lookups instead of per-device linear scans
+            room_lookup: Dict[Any, str] = {
+                r.get("id"): r.get("name", "") for r in self.rooms
+            }
+            shade_positions: Dict[Any, int] = {
+                s.get("id"): s.get("position", 0)
+                for s in shades_data.get("shades", [])
+            }
+
+            # A roomId we don't know about means a room was added/changed since
+            # the last /rooms fetch: refresh now so names are right immediately.
+            if not fetch_rooms and any(
+                item.get("roomId") not in room_lookup
+                for item in (*raw_devices, *raw_scenes)
+                if item.get("roomId") is not None
+            ):
+                _LOGGER.debug("Unknown roomId found, refreshing room list")
+                await self._refresh_rooms()
+                room_lookup = {r.get("id"): r.get("name", "") for r in self.rooms}
+
+            _LOGGER.debug(
+                "Found %d rooms, %d scenes, %d devices, %d shades",
+                len(self.rooms), len(raw_scenes), len(raw_devices), len(shade_positions),
             )
-            
-            rooms_data = results[0]
-            scenes_data = results[1]
-            devices_data = results[2]
-            shades_data = results[3]
-            
-            # Store rooms for later use
-            self.rooms = rooms_data.get("rooms", [])
-            
-            _LOGGER.debug("Found %d rooms, %d scenes, %d devices, %d shades", 
-                         len(self.rooms), 
-                         len(scenes_data.get("scenes", [])),
-                         len(devices_data.get("devices", [])),
-                         len(shades_data.get("shades", [])))
-            
+
             devices: List[Dict[str, Any]] = []
-            
+
             # Process regular devices
-            for device in devices_data.get("devices", []):
-                room_name = next(
-                    (r.get("name", "") for r in self.rooms if r.get("id") == device.get("roomId")),
-                    "",
-                )
-                
+            for device in raw_devices:
+                room_name = room_lookup.get(device.get("roomId"), "")
                 device_type = device.get("subType") or device.get("type", "")
-                shade_position = 0
-                
-                if device_type == "Shade":
-                    # Find matching shade position
-                    for shade in shades_data.get("shades", []):
-                        if shade.get("id") == device.get("id"):
-                            shade_position = shade.get("position", 0)
-                            break
-                
-                # Map Crestron device types to Home Assistant device types
-                ha_device_type = None
-                if device_type == "Dimmer" or device_type == "Switch":
-                    ha_device_type = "light"
-                elif device_type == "Shade":
-                    ha_device_type = "shade"
-                
-                device_info = {
+
+                devices.append({
                     "id": device.get("id"),
                     "type": device_type,
                     "subType": device_type,
@@ -222,47 +244,32 @@ class CrestronClient:
                     "roomName": room_name,
                     "level": device.get("level", 0),
                     "status": device.get("status", False),
-                    "position": shade_position,
+                    "position": shade_positions.get(device.get("id"), 0) if device_type == "Shade" else 0,
                     "connectionStatus": device.get("connectionStatus", "online"),
-                    "ha_device_type": ha_device_type,
-                }
-                
-                # Add all devices regardless of type or ignored pattern
-                devices.append(device_info)
-                _LOGGER.debug("Added %s device: %s (ID: %s)", 
-                             ha_device_type or "unknown", device_info["name"], device_info["id"])
-            
-            # Process scenes - add all scenes regardless of enabled_types or ignored patterns
-            for scene in scenes_data.get("scenes", []):
-                room_name = next(
-                    (r.get("name", "") for r in self.rooms if r.get("id") == scene.get("roomId")),
-                    "",
-                )
-                
-                # Always set type to "Scene" regardless of the scene's type field
-                # This ensures shade scenes are treated as scenes, not shades
-                scene_info = {
+                })
+
+            # Process scenes - always typed "Scene" so shade scenes are treated
+            # as scenes, not shades (original type is kept as sceneType)
+            for scene in raw_scenes:
+                room_name = room_lookup.get(scene.get("roomId"), "")
+
+                devices.append({
                     "id": scene.get("id"),
                     "type": "Scene",
-                    "subType": "Scene",  # Always use "Scene" as subType
-                    "sceneType": scene.get("type", ""),  # Store original type as sceneType
+                    "subType": "Scene",
+                    "sceneType": scene.get("type", ""),
                     "name": f"{room_name} {scene.get('name', '')}",
                     "roomId": scene.get("roomId"),
                     "roomName": room_name,
                     "level": 0,
                     "status": scene.get("status", False),
                     "position": 0,
-                    "connectionStatus": "n/a",  # Scenes don't have a physical connection status
-                    "ha_device_type": "scene",
-                }
-                
-                devices.append(scene_info)
-                _LOGGER.debug("Added scene: %s (ID: %s, Type: %s)", 
-                             scene_info["name"], scene_info["id"], scene_info["sceneType"])
-            
-            _LOGGER.info("Found %d devices matching enabled types", len(devices))
+                    "connectionStatus": "n/a",  # Scenes have no physical connection status
+                })
+
+            _LOGGER.debug("Prepared %d devices and scenes", len(devices))
             return devices
-        
+
         except CrestronApiError:
             raise
         except Exception as error:
@@ -307,22 +314,10 @@ class CrestronClient:
         """Execute a scene."""
         await self._api_request("POST", f"/scenes/recall/{scene_id}", {})
 
-    async def get_sensors(self, ignored_device_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    async def get_sensors(self) -> List[Dict[str, Any]]:
         """Get all sensors from the Crestron Home system."""
         response = await self._api_request("GET", "/sensors")
         return response.get("sensors", [])
-
-    async def get_rooms(self) -> List[Dict[str, Any]]:
-        """Get all rooms from the Crestron Home system."""
-        try:
-            response = await self._api_request("GET", "/rooms")
-            rooms = response.get("rooms", [])
-            # Update the stored rooms data
-            self.rooms = rooms
-            return rooms
-        except Exception as error:
-            _LOGGER.error("Error getting rooms: %s", error)
-            return []
 
     # ── Thermostat API methods ──────────────────────────────────────
 
@@ -330,11 +325,6 @@ class CrestronClient:
         """Get all thermostats from the Crestron Home system."""
         response = await self._api_request("GET", "/thermostats")
         return response.get("thermostats", [])
-
-    async def get_thermostat(self, thermostat_id: int) -> Dict[str, Any]:
-        """Get a specific thermostat."""
-        response = await self._api_request("GET", f"/thermostats/{thermostat_id}")
-        return response.get("thermostats", [{}])[0]
 
     async def set_thermostat_mode(self, thermostat_id: int, mode: str) -> None:
         """Set thermostat HVAC mode (Off, Heat, Cool, Auto)."""

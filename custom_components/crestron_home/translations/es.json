@@ -10,7 +10,15 @@
           "token": "Token de API",
           "update_interval": "Intervalo de actualizacion (segundos)",
           "enabled_device_types": "Tipos de dispositivos",
-          "ignored_device_names": "Nombres de dispositivos ignorados (opcional)"
+          "ignored_device_names": "Nombres de dispositivos ignorados (opcional)",
+          "verify_ssl": "Verificar certificado SSL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-autenticar Crestron Home",
+        "description": "El token de API para {host} ya no es valido. Ingresa un nuevo token generado en la app Crestron Home Setup.",
+        "data": {
+          "token": "Token de API"
         }
       }
     },
@@ -20,7 +28,8 @@
       "unknown": "Error inesperado"
     },
     "abort": {
-      "already_configured": "El dispositivo ya esta configurado"
+      "already_configured": "El dispositivo ya esta configurado",
+      "reauth_successful": "La re-autenticacion fue exitosa"
     }
   },
   "options": {
@@ -31,7 +40,8 @@
         "data": {
           "update_interval": "Intervalo de actualizacion (segundos)",
           "enabled_device_types": "Tipos de dispositivos",
-          "ignored_device_names": "Nombres de dispositivos ignorados (opcional)"
+          "ignored_device_names": "Nombres de dispositivos ignorados (opcional)",
+          "verify_ssl": "Verificar certificado SSL"
         }
       }
     },

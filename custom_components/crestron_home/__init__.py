@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import List
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import async_get as async_get_device_registry
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
@@ -84,6 +87,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         model=MODEL,
     )
 
+    _async_migrate_device_identifiers(hass, entry)
+
     enabled_platforms = _platforms_for_device_types(enabled_device_types)
     _LOGGER.debug("Setting up enabled platforms: %s", enabled_platforms)
     await hass.config_entries.async_forward_entry_setups(entry, enabled_platforms)
@@ -91,6 +96,68 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     return True
+
+
+def _async_migrate_device_identifiers(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Migrate pre-0.5.0 bare-numeric device identifiers to namespaced ones.
+
+    Identifiers used to be the bare numeric Crestron ID, which collided across
+    the independent /devices, /scenes, /sensors ID spaces. Updating them in
+    place (namespace inferred from the attached entities' unique_id) preserves
+    user customizations like area assignments and renamed devices.
+    """
+    device_registry = async_get_device_registry(hass)
+    entity_registry = async_get_entity_registry(hass)
+
+    for device_entry in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+        legacy = {
+            ident for ident in device_entry.identifiers
+            if len(ident) == 2 and ident[0] == DOMAIN and str(ident[1]).isdigit()
+        }
+        if not legacy:
+            continue
+
+        # Infer the namespace from this device's entity unique_ids
+        # (crestron_light_5 → light, crestron_binary_sensor_7 → binary_sensor)
+        prefixes = set()
+        for entity_entry in er.async_entries_for_device(
+            entity_registry, device_entry.id, include_disabled_entities=True
+        ):
+            match = re.fullmatch(r"crestron_([a-z_]+)_\d+", entity_entry.unique_id or "")
+            if match:
+                prefixes.add(match.group(1))
+
+        try:
+            if len(prefixes) == 1:
+                prefix = next(iter(prefixes))
+                new_identifiers = {
+                    (DOMAIN, f"{prefix}_{ident[1]}") if ident in legacy else ident
+                    for ident in device_entry.identifiers
+                }
+                _LOGGER.debug(
+                    "Migrating device %s identifiers %s → %s",
+                    device_entry.name, device_entry.identifiers, new_identifiers,
+                )
+                device_registry.async_update_device(
+                    device_entry.id, new_identifiers=new_identifiers
+                )
+            else:
+                # Ambiguous (an actual ID collision merged unrelated devices) or
+                # no entities: detach so entities re-link to fresh namespaced devices
+                _LOGGER.debug(
+                    "Detaching ambiguous legacy device %s (%s)",
+                    device_entry.name, device_entry.identifiers,
+                )
+                device_registry.async_update_device(
+                    device_entry.id, remove_config_entry_id=entry.entry_id
+                )
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception(
+                "Failed to migrate device %s, detaching it instead", device_entry.name
+            )
+            device_registry.async_update_device(
+                device_entry.id, remove_config_entry_id=entry.entry_id
+            )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry, platform_override: list = None) -> bool:

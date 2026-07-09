@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import voluptuous as vol
 
@@ -35,6 +35,45 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+ALL_DEVICE_TYPES = [
+    DEVICE_TYPE_LIGHT,
+    DEVICE_TYPE_SHADE,
+    DEVICE_TYPE_SCENE,
+    DEVICE_TYPE_BINARY_SENSOR,
+    DEVICE_TYPE_SENSOR,
+    DEVICE_TYPE_THERMOSTAT,
+]
+
+DEVICE_TYPE_SELECTOR = selector.SelectSelector(
+    selector.SelectSelectorConfig(
+        options=[
+            {"value": DEVICE_TYPE_LIGHT, "label": "Lights"},
+            {"value": DEVICE_TYPE_SHADE, "label": "Shades"},
+            {"value": DEVICE_TYPE_SCENE, "label": "Scenes"},
+            {"value": DEVICE_TYPE_BINARY_SENSOR, "label": "Binary Sensors"},
+            {"value": DEVICE_TYPE_SENSOR, "label": "Sensors"},
+            {"value": DEVICE_TYPE_THERMOSTAT, "label": "Thermostats"},
+        ],
+        multiple=True,
+        mode=selector.SelectSelectorMode.LIST,
+    ),
+)
+
+UPDATE_INTERVAL_SELECTOR = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=MIN_UPDATE_INTERVAL,
+        mode=selector.NumberSelectorMode.BOX,
+        unit_of_measurement="seconds",
+    ),
+)
+
+IGNORED_NAMES_SELECTOR = selector.TextSelector(
+    selector.TextSelectorConfig(
+        multiple=True,
+        suffix="Use % as wildcard (e.g., %bathroom%)",
+    ),
+)
+
 
 async def validate_input(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the user input allows us to connect.
@@ -45,6 +84,7 @@ async def validate_input(hass: HomeAssistant, data: Dict[str, Any]) -> Dict[str,
         hass=hass,
         host=data[CONF_HOST],
         token=data[CONF_TOKEN],
+        verify_ssl=data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
     )
 
     try:
@@ -85,18 +125,11 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 # Ensure enabled_device_types is preserved from user selection
                 # Only set defaults if the key is completely absent (not if user chose empty)
-                user_input.setdefault(CONF_ENABLED_DEVICE_TYPES, [
-                    DEVICE_TYPE_LIGHT,
-                    DEVICE_TYPE_SHADE,
-                    DEVICE_TYPE_SCENE,
-                    DEVICE_TYPE_BINARY_SENSOR,
-                    DEVICE_TYPE_SENSOR,
-                    DEVICE_TYPE_THERMOSTAT,
-                ])
+                user_input.setdefault(CONF_ENABLED_DEVICE_TYPES, list(ALL_DEVICE_TYPES))
                 user_input.setdefault(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
 
                 return self.async_create_entry(title=info["title"], data=user_input)
-            
+
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
@@ -114,43 +147,51 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_TOKEN): str,
                     vol.Required(
                         CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=MIN_UPDATE_INTERVAL,
-                            mode=selector.NumberSelectorMode.BOX,
-                            unit_of_measurement="seconds",
-                        ),
-                    ),
-                    vol.Optional(CONF_ENABLED_DEVICE_TYPES, default=[
-                        DEVICE_TYPE_LIGHT,
-                        DEVICE_TYPE_SHADE,
-                        DEVICE_TYPE_SCENE,
-                        DEVICE_TYPE_BINARY_SENSOR,
-                        DEVICE_TYPE_SENSOR,
-                        DEVICE_TYPE_THERMOSTAT,
-                    ]): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                {"value": DEVICE_TYPE_LIGHT, "label": "Lights"},
-                                {"value": DEVICE_TYPE_SHADE, "label": "Shades"},
-                                {"value": DEVICE_TYPE_SCENE, "label": "Scenes"},
-                                {"value": DEVICE_TYPE_BINARY_SENSOR, "label": "Binary Sensors"},
-                                {"value": DEVICE_TYPE_SENSOR, "label": "Sensors"},
-                                {"value": DEVICE_TYPE_THERMOSTAT, "label": "Thermostats"},
-                            ],
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.LIST,
-                        ),
-                    ),
-                    vol.Optional(CONF_IGNORED_DEVICE_NAMES, default=DEFAULT_IGNORED_DEVICE_NAMES): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            multiple=True,
-                            suffix="Use % as wildcard (e.g., %bathroom%)",
-                        ),
-                    ),
+                    ): UPDATE_INTERVAL_SELECTOR,
+                    vol.Optional(
+                        CONF_ENABLED_DEVICE_TYPES, default=list(ALL_DEVICE_TYPES)
+                    ): DEVICE_TYPE_SELECTOR,
+                    vol.Optional(
+                        CONF_IGNORED_DEVICE_NAMES, default=DEFAULT_IGNORED_DEVICE_NAMES
+                    ): IGNORED_NAMES_SELECTOR,
                     vol.Optional(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
                 }
             ),
+            errors=errors,
+        )
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
+        """Handle reauth when the API token becomes invalid."""
+        self._reauth_entry_id = self.context["entry_id"]
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Ask for a new API token and validate it."""
+        errors: Dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self._reauth_entry_id)
+
+        if user_input is not None:
+            new_data = {**entry.data, CONF_TOKEN: user_input[CONF_TOKEN]}
+            try:
+                await validate_input(self.hass, new_data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                self.hass.config_entries.async_update_entry(entry, data=new_data)
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            description_placeholders={"host": entry.data[CONF_HOST]},
+            data_schema=vol.Schema({vol.Required(CONF_TOKEN): str}),
             errors=errors,
         )
 
@@ -164,20 +205,27 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options."""
         errors: Dict[str, str] = {}
 
+        # Get current values: prefer options (latest), fallback to data (initial)
+        def _current(key, default=None):
+            return self.config_entry.options.get(
+                key, self.config_entry.data.get(key, default)
+            )
+
         if user_input is not None:
-            # Validate the updated configuration
+            # Validate the updated configuration (with the SSL mode being saved)
             try:
                 client = CrestronClient(
                     hass=self.hass,
                     host=self.config_entry.data[CONF_HOST],
                     token=self.config_entry.data[CONF_TOKEN],
+                    verify_ssl=user_input.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
                 )
                 await client.login()
-                
+
                 # Return the options to be stored in entry.options
                 # The async_reload_entry function will handle merging these with the data
                 return self.async_create_entry(title="", data=user_input)
-            
+
             except CrestronConnectionError:
                 errors["base"] = "cannot_connect"
             except CrestronAuthError:
@@ -186,61 +234,26 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
-        # Get current values: prefer options (latest), fallback to data (initial)
-        def _current(key, default=None):
-            return self.config_entry.options.get(
-                key, self.config_entry.data.get(key, default)
-            )
-
-        all_types_default = [
-            DEVICE_TYPE_LIGHT, DEVICE_TYPE_SHADE, DEVICE_TYPE_SCENE,
-            DEVICE_TYPE_BINARY_SENSOR, DEVICE_TYPE_SENSOR, DEVICE_TYPE_THERMOSTAT,
-        ]
-
-        current_update_interval = _current(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
-        current_enabled_types = _current(CONF_ENABLED_DEVICE_TYPES, all_types_default)
-        current_ignored = _current(CONF_IGNORED_DEVICE_NAMES, DEFAULT_IGNORED_DEVICE_NAMES)
-        current_verify_ssl = _current(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
-
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_UPDATE_INTERVAL, default=current_update_interval
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=MIN_UPDATE_INTERVAL,
-                            mode=selector.NumberSelectorMode.BOX,
-                            unit_of_measurement="seconds",
-                        ),
-                    ),
+                        CONF_UPDATE_INTERVAL,
+                        default=_current(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+                    ): UPDATE_INTERVAL_SELECTOR,
                     vol.Required(
-                        CONF_ENABLED_DEVICE_TYPES, default=current_enabled_types
-                    ): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                {"value": DEVICE_TYPE_LIGHT, "label": "Lights"},
-                                {"value": DEVICE_TYPE_SHADE, "label": "Shades"},
-                                {"value": DEVICE_TYPE_SCENE, "label": "Scenes"},
-                                {"value": DEVICE_TYPE_BINARY_SENSOR, "label": "Binary Sensors"},
-                                {"value": DEVICE_TYPE_SENSOR, "label": "Sensors"},
-                                {"value": DEVICE_TYPE_THERMOSTAT, "label": "Thermostats"},
-                            ],
-                            multiple=True,
-                            mode=selector.SelectSelectorMode.LIST,
-                        ),
-                    ),
+                        CONF_ENABLED_DEVICE_TYPES,
+                        default=_current(CONF_ENABLED_DEVICE_TYPES, list(ALL_DEVICE_TYPES)),
+                    ): DEVICE_TYPE_SELECTOR,
                     vol.Optional(
                         CONF_IGNORED_DEVICE_NAMES,
-                        default=current_ignored,
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            multiple=True,
-                            suffix="Use % as wildcard (e.g., %bathroom%)",
-                        ),
-                    ),
-                    vol.Optional(CONF_VERIFY_SSL, default=current_verify_ssl): bool,
+                        default=_current(CONF_IGNORED_DEVICE_NAMES, DEFAULT_IGNORED_DEVICE_NAMES),
+                    ): IGNORED_NAMES_SELECTOR,
+                    vol.Optional(
+                        CONF_VERIFY_SSL,
+                        default=_current(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+                    ): bool,
                 }
             ),
             errors=errors,
