@@ -47,16 +47,16 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 
 | Crestron Device Subtype | Home Assistant Entity | Features | Testing Status |
 |-------------------------|------------------------|----------|----------------|
-| Dimmer                  | Light                  | On/Off, Brightness, Fade Transition, Debounce | Tested |
-| Switch                  | Light                  | On/Off | Tested |
-| Shade                   | Cover                  | Open/Close, Position, Stop, Debounce | Tested |
-| Scene                   | Scene                  | Activate | Tested |
-| OccupancySensor         | Binary Sensor         | Occupancy detection | Tested |
+| Dimmer                  | Light                  | On/Off, Brightness, Fade Transition, Debounce | **Verified live on v0.5.0** |
+| Switch                  | Light                  | On/Off | **Verified live on v0.5.0** |
+| Shade                   | Cover                  | Open/Close, Position, Stop, Debounce | Tested (pre-0.5.0) |
+| Scene                   | Scene                  | Activate | Tested (pre-0.5.0) |
+| OccupancySensor         | Binary Sensor         | Occupancy detection | Tested (pre-0.5.0) |
 | DoorSensor              | Binary Sensor         | Door open/closed status, Battery level | Not tested |
 | PhotoSensor             | Sensor                | Light level measurement (lux) | Not tested |
-| Thermostat              | Climate               | Temperature, Fan modes, HVAC modes, HVAC action | Tested |
+| Thermostat              | Climate               | Temperature, Fan modes, HVAC modes, HVAC action | **Verified live on v0.5.0** |
 
-> **Note**: The OccupancySensor and Thermostat implementations have been thoroughly tested. The DoorSensor and PhotoSensor implementations are included but have not been tested with actual hardware yet.
+> **Testing notes**: The v0.5.0 device-registry identifier migration was verified on a real-world installation: all devices migrated with 0 legacy identifiers remaining, 0 duplicated devices, 0 component errors in the log, and 0 unavailable entities. Lights (on/off/brightness) and thermostats (mode, current/target temperature) were confirmed reporting live state after the migration. Shade, Scene, and OccupancySensor were tested on real hardware in earlier versions but were not present in the v0.5.0 verification install; DoorSensor and PhotoSensor are implemented but have never been tested with actual hardware.
 
 ## Installation
 
