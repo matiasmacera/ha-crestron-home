@@ -56,7 +56,7 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
 | PhotoSensor             | Sensor                | Light level measurement (lux) | Not tested |
 | Thermostat              | Climate               | Temperature, Fan modes, HVAC modes, HVAC action | **Verified live on v0.5.0** |
 
-> **Testing notes**: The v0.5.0 device-registry identifier migration was verified on a real-world installation: all devices migrated with 0 legacy identifiers remaining, 0 duplicated devices, 0 component errors in the log, and 0 unavailable entities. Lights (on/off/brightness) and thermostats (mode, current/target temperature) were confirmed reporting live state after the migration. Shade, Scene, and OccupancySensor were tested on real hardware in earlier versions but were not present in the v0.5.0 verification install; DoorSensor and PhotoSensor are implemented but have never been tested with actual hardware.
+> **Testing notes**: The v0.5.0 device-registry identifier migration has been verified on a real-world installation: all devices migrated with no legacy identifiers remaining, no duplicated devices, no component errors, and no unavailable entities. Lights (on/off/brightness) and thermostats (mode, current/target temperature) were confirmed reporting live state after the migration. Shade, Scene, and OccupancySensor were tested on real hardware in earlier versions; DoorSensor and PhotoSensor are implemented but have not been tested with actual hardware yet.
 
 ## Installation
 
