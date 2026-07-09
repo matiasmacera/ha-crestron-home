@@ -42,7 +42,7 @@ class CrestronDevice:
         """Return the full name of the device including room.
 
         Avoids duplication when the device name already starts with the room name
-        (e.g. API returns "Comedor Termostato PB" for a device in room "Comedor").
+        (e.g. API returns "Kitchen Thermostat" for a device in room "Kitchen").
         """
         if self.room and self.name.lower().startswith(self.room.lower()):
             return self.name.strip()
