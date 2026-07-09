@@ -30,15 +30,17 @@ The integration communicates with the Crestron Home CWS (Crestron Web Service) s
   - Door sensors (binary sensors with battery level reporting)
   - Photo sensors (illuminance measurement in lux)
 - **Configuration Flow**: Easy setup through the Home Assistant UI with options flow for reconfiguration
-- **Automatic Discovery**: Automatically discovers all compatible devices
+- **Re-authentication Flow**: If the API token becomes invalid, HA prompts for a new one instead of silently failing
+- **Dynamic Device Discovery**: Devices added to Crestron Home appear in HA without a restart; removed devices become unavailable
 - **Room-Based Organization**: Devices are automatically organized by room on the Home Assistant dashboard
 - **Device Name Filtering**: Wildcard pattern matching to hide unwanted devices (e.g., `%bathroom%`)
 - **Selective Platform Loading**: Choose which device types to enable/disable without reinstalling
 - **Optimistic State Updates**: Immediate UI feedback when controlling devices (2s cooldown)
 - **Command Debouncing**: Slider controls (brightness, shade position) are debounced at 200ms to prevent API flooding
 - **Parallel API Polling**: Devices, sensors, and thermostats are fetched concurrently for faster updates
-- **Change Detection**: Lightweight field-based change detection without deep copy overhead
-- **Robust Error Handling**: Proper session management, authentication retry, and connection error recovery
+- **Efficient Change Detection**: Lightweight field-based change detection; entities skip state writes when their device didn't change
+- **Room List Caching**: `/rooms` is only refetched every 20 polls (or immediately when an unknown room shows up)
+- **Robust Error Handling**: Shared session management, automatic re-login with request retry on session expiry, and connection error recovery
 - **Multi-language**: English and Spanish translations
 
 ### Supported Device Types
@@ -152,7 +154,7 @@ Dimmable lights support native Home Assistant transitions for smooth fade effect
 
 - **Home Assistant Core**: Version 2024.2 or newer
 - **Python**: Version 3.11 or newer
-- **Dependencies**: aiohttp 3.8.0 or newer (for API communication)
+- **Dependencies**: None beyond Home Assistant itself (uses HA's bundled aiohttp)
 - **Hardware Requirements**:
   - A Crestron Home system with CWS (Crestron Web Service) enabled
   - Network connectivity between Home Assistant and the Crestron processor
@@ -164,15 +166,16 @@ Dimmable lights support native Home Assistant transitions for smooth fade effect
 
 ```
 custom_components/crestron_home/
-├── __init__.py          # Integration setup, platform loading, reload logic
-├── api.py               # Crestron REST API client (login, devices, sensors, thermostats)
-├── config_flow.py       # Configuration UI (setup + options flow)
-├── const.py             # Constants, defaults, and device-type-to-platform mapping
+├── __init__.py          # Integration setup, platform loading, reload logic, identifier migration
+├── api.py               # Crestron REST API client (login, devices, sensors, thermostats, room caching)
+├── config_flow.py       # Configuration UI (setup + options + reauth flow)
+├── const.py             # Constants, defaults, and type/platform mappings
 ├── coordinator.py       # DataUpdateCoordinator for periodic polling
-├── device_manager.py    # Device processing, change detection, composite key storage
-├── entity.py            # CrestronBaseEntity (shared boilerplate, optimistic cooldown, debouncing)
+├── device_manager.py    # Device processing, change detection, pruning, composite key storage
+├── entity.py            # CrestronBaseEntity + shared dynamic-discovery helper
 ├── models.py            # CrestronDevice dataclass
 ├── manifest.json        # Integration metadata
+├── strings.json         # Source strings for translations
 ├── translations/        # Localization files (en, es)
 ├── icon.png             # Integration icon (256x256)
 ├── logo.png             # Integration logo (1024x1024)
@@ -186,19 +189,19 @@ custom_components/crestron_home/
 
 ### How It Works
 
-1. **API Client** (`api.py`): Handles HTTPS communication with the Crestron CWS server. Uses the shared Home Assistant aiohttp session for all requests (login + API) to avoid connection leaks. Sessions expire after 10 minutes with automatic re-login.
+1. **API Client** (`api.py`): Handles HTTPS communication with the Crestron CWS server. Uses the shared Home Assistant aiohttp session for all requests (login + API) to avoid connection leaks. Sessions expire after 10 minutes with automatic re-login, and a request that hits a 401 is retried once after re-authenticating. Room and shade lookups are O(1) dictionaries, and the room list is cached across polls.
 
-2. **Device Manager** (`device_manager.py`): Maintains a consistent snapshot of all devices using composite keys (`device:N`, `sensor:N`, `thermostat:N`) to prevent ID collisions between different API namespaces. Uses lightweight tuple-based snapshots for change detection instead of deep copies. Room name resolution uses an O(1) dictionary lookup.
+2. **Device Manager** (`device_manager.py`): Maintains a consistent snapshot of all devices using composite keys (`device:N`, `scene:N`, `sensor:N`, `thermostat:N`) to prevent ID collisions between different API namespaces. Uses lightweight tuple-based snapshots for change detection (including thermostat raw fields like temperature and mode) and publishes the set of changed devices each poll. Devices that disappear from the API are pruned so their entities go unavailable.
 
-3. **Coordinator** (`coordinator.py`): Uses Home Assistant's `DataUpdateCoordinator` pattern to poll devices at the configured interval. Returns a dictionary of devices organized by type with O(1) lookup by device ID.
+3. **Coordinator** (`coordinator.py`): Uses Home Assistant's `DataUpdateCoordinator` pattern to poll devices at the configured interval. Returns a dictionary of devices organized by type with O(1) lookup by device ID. Raises `ConfigEntryAuthFailed` on persistent auth errors to trigger the reauth flow.
 
-4. **Base Entity** (`entity.py`): `CrestronBaseEntity` absorbs all duplicated boilerplate from the 6 platform files: device/entity setup, coordinator data lookup, hidden entity handling, optimistic cooldown (2s), and command debouncing (200ms). All platforms inherit from this class.
+4. **Base Entity** (`entity.py`): `CrestronBaseEntity` absorbs all duplicated boilerplate from the 6 platform files: device/entity setup, coordinator data lookup, hidden entity handling, availability (coordinator health + device connection), optimistic cooldown (2s), and command debouncing (200ms). Entities skip redundant state writes when their device didn't change in the last poll. A shared `async_setup_platform_entities` helper gives every platform dynamic device discovery.
 
 5. **Platform Entities**: Each platform (light, cover, scene, climate, sensor, binary_sensor) creates entities that read state from the coordinator and send commands through the API client. Slider-type controls (brightness, shade position) use debouncing to prevent flooding the Crestron API.
 
 6. **Device Model** (`models.py`): The `CrestronDevice` dataclass normalizes different device types into a common structure. Handles room name deduplication in `full_name` (avoids "Room Room Device" when the API already includes the room name).
 
-7. **Platform Mapping** (`const.py`): A single `DEVICE_TYPE_TO_PLATFORM` dictionary serves as the source of truth for mapping device types to HA platforms, used consistently across setup, unload, and cleanup operations.
+7. **Type Mappings** (`const.py`): `CRESTRON_TYPE_TO_DEVICE_TYPE` (Crestron subtype → device type) and `DEVICE_TYPE_TO_PLATFORM` (device type → HA platform) are the single source of truth for type mapping, used consistently across the API client, device manager, setup, unload, and cleanup.
 
 ## Troubleshooting
 
@@ -243,6 +246,32 @@ Contributions are welcome! Please open an issue or pull request on GitHub.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### v0.5.0 (2026-07-09)
+- **Correctness Fixes**:
+  - Fixed device registry ID collisions: registry identifiers are now namespaced by device type (`light_5`, `scene_5`, ...) instead of the bare numeric ID, which could merge unrelated devices (e.g., a scene and a light sharing an ID). Existing registry entries are migrated in place, preserving area assignments and custom names
+  - Scenes now use their own internal namespace (`scene:N`), fully separating them from `/devices` IDs
+  - Entity availability now reflects coordinator health: if the Crestron processor becomes unreachable, entities show as unavailable instead of frozen at their last state
+  - Devices removed from Crestron are pruned each poll and their entities become unavailable (previously they lingered with stale state)
+  - The SSL verification setting is now honored when validating credentials in the config/options flow
+  - Pending debounced commands are cancelled when an entity is removed
+- **Dynamic Device Discovery**: All platforms (previously only thermostats) hot-add devices that appear in Crestron Home — no HA restart needed
+- **Re-authentication Flow**: An invalid API token now triggers HA's reauth prompt (enter the new token in the UI) instead of silent polling errors
+- **Performance**:
+  - `api.py` room/shade matching went from O(devices × rooms) linear scans to O(1) dict lookups (thousands of comparisons saved per poll)
+  - The `/rooms` endpoint is cached and only refetched every 20 polls, or immediately when an unknown room appears (one fewer HTTP request per poll)
+  - Entities skip state writes when their device didn't change in the last poll (change detection now also covers thermostat raw fields, door battery, and sensor values)
+  - A 401 mid-session re-authenticates and retries the request once instead of failing the whole poll
+  - Exact brightness conversion (0-65535 ↔ 0-255 is lossless), so the brightness slider no longer drifts by 1-2 points
+- **Code Quality**:
+  - New shared `async_setup_platform_entities` helper removes the per-platform setup boilerplate
+  - Unified the Crestron subtype mapping into `CRESTRON_TYPE_TO_DEVICE_TYPE` (was triplicated across api.py/device_manager.py)
+  - Removed dead code: unused API methods, `DEBUG_MODE` logging block, unused parameters, redundant `unique_id` overrides
+  - Proper entity hiding via `entity_registry_visible_default` (the old `_attr_hidden_by` assignment was a no-op)
+  - Removed the `aiohttp` requirement from the manifest (HA bundles it; pinning could conflict on HA updates)
+- **Infrastructure**:
+  - Added GitHub Actions CI: hassfest + HACS validation on every push/PR and weekly
+  - Added `strings.json` as the translation source of truth; added missing `verify_ssl` labels and reauth strings (en/es)
 
 ### v0.4.0 (2026-02-12)
 - **Performance Optimizations**:

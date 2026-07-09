@@ -15,15 +15,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .api import CrestronClient
 from .const import (
     CONF_ENABLED_DEVICE_TYPES,
+    CRESTRON_MAX_LEVEL,
     DEVICE_SUBTYPE_DIMMER,
     DEVICE_TYPE_LIGHT,
     DOMAIN,
 )
 from .coordinator import CrestronHomeDataUpdateCoordinator
-from .entity import CrestronBaseEntity
+from .entity import CrestronBaseEntity, async_setup_platform_entities
 from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,20 +42,14 @@ async def async_setup_entry(
         _LOGGER.debug("Light platform not enabled, skipping setup")
         return
 
-    lights = []
-    for device in coordinator.data.get(DEVICE_TYPE_LIGHT, {}).values():
+    def _create_light(coordinator, device: CrestronDevice) -> CrestronBaseEntity:
         if device.type == DEVICE_SUBTYPE_DIMMER:
-            light = CrestronHomeDimmer(coordinator, device)
-        else:
-            light = CrestronHomeLight(coordinator, device)
+            return CrestronHomeDimmer(coordinator, device)
+        return CrestronHomeLight(coordinator, device)
 
-        if device.ha_hidden:
-            light._attr_hidden_by = "integration"
-
-        lights.append(light)
-
-    _LOGGER.debug("Adding %d light entities", len(lights))
-    async_add_entities(lights)
+    async_setup_platform_entities(
+        entry, coordinator, async_add_entities, DEVICE_TYPE_LIGHT, _create_light
+    )
 
 
 class CrestronHomeBaseLight(CrestronBaseEntity, LightEntity):
@@ -64,12 +58,6 @@ class CrestronHomeBaseLight(CrestronBaseEntity, LightEntity):
     _device_type_key = DEVICE_TYPE_LIGHT
     _supports_optimistic = True
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the light."""
-        super().__init__(coordinator, device)
-        self._attr_unique_id = f"crestron_light_{device.id}"
-        self._attr_device_class = None
-
     @property
     def is_on(self) -> bool:
         """Return true if light is on."""
@@ -77,14 +65,14 @@ class CrestronHomeBaseLight(CrestronBaseEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
-        level = CrestronClient.percentage_to_crestron(100)
-
         self._mark_optimistic()
-        self._crestron_device.level = level
+        self._crestron_device.level = CRESTRON_MAX_LEVEL
         self._crestron_device.status = True
         self.async_write_ha_state()
 
-        await self.coordinator.client.set_light_state(self._crestron_device.id, level)
+        await self.coordinator.client.set_light_state(
+            self._crestron_device.id, CRESTRON_MAX_LEVEL
+        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
@@ -99,36 +87,32 @@ class CrestronHomeBaseLight(CrestronBaseEntity, LightEntity):
 class CrestronHomeLight(CrestronHomeBaseLight):
     """Representation of a Crestron Home non-dimmable light."""
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the light."""
-        super().__init__(coordinator, device)
-        self._attr_color_mode = ColorMode.ONOFF
-        self._attr_supported_color_modes = {ColorMode.ONOFF}
+    _attr_color_mode = ColorMode.ONOFF
+    _attr_supported_color_modes = {ColorMode.ONOFF}
 
 
 class CrestronHomeDimmer(CrestronHomeBaseLight):
     """Representation of a Crestron Home dimmable light."""
 
-    def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
-        """Initialize the light."""
-        super().__init__(coordinator, device)
-        self._attr_color_mode = ColorMode.BRIGHTNESS
-        self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
-        self._attr_supported_features = LightEntityFeature.TRANSITION
+    _attr_color_mode = ColorMode.BRIGHTNESS
+    _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+    _attr_supported_features = LightEntityFeature.TRANSITION
 
     @property
     def brightness(self) -> Optional[int]:
-        """Return the brightness of the light."""
-        device = self._get_device()
-        return int(CrestronClient.crestron_to_percentage(device.level) * 255 / 100)
+        """Return the brightness of the light.
+
+        Direct 0-65535 → 0-255 conversion (65535/255 is exactly 257, so the
+        roundtrip with async_turn_on is lossless and the slider doesn't drift).
+        """
+        return round(self._get_device().level * 255 / CRESTRON_MAX_LEVEL)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
         if ATTR_BRIGHTNESS in kwargs:
-            brightness_pct = kwargs[ATTR_BRIGHTNESS] / 255 * 100
-            level = CrestronClient.percentage_to_crestron(brightness_pct)
+            level = round(kwargs[ATTR_BRIGHTNESS] * CRESTRON_MAX_LEVEL / 255)
         else:
-            level = CrestronClient.percentage_to_crestron(100)
+            level = CRESTRON_MAX_LEVEL
 
         transition = int(kwargs.get(ATTR_TRANSITION, 0))
 

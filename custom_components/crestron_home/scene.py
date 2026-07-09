@@ -7,18 +7,16 @@ from typing import Any
 from homeassistant.components.scene import Scene
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_ENABLED_DEVICE_TYPES,
     DEVICE_TYPE_SCENE,
     DOMAIN,
-    MANUFACTURER,
     MODEL,
 )
 from .coordinator import CrestronHomeDataUpdateCoordinator
-from .entity import CrestronBaseEntity
+from .entity import CrestronBaseEntity, async_setup_platform_entities
 from .models import CrestronDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,15 +35,9 @@ async def async_setup_entry(
         _LOGGER.debug("Scene platform not enabled, skipping setup")
         return
 
-    scenes = []
-    for device in coordinator.data.get(DEVICE_TYPE_SCENE, {}).values():
-        scene = CrestronHomeScene(coordinator, device)
-        if device.ha_hidden:
-            scene._attr_hidden_by = "integration"
-        scenes.append(scene)
-
-    _LOGGER.debug("Adding %d scene entities", len(scenes))
-    async_add_entities(scenes)
+    async_setup_platform_entities(
+        entry, coordinator, async_add_entities, DEVICE_TYPE_SCENE, CrestronHomeScene
+    )
 
 
 class CrestronHomeScene(CrestronBaseEntity, Scene):
@@ -56,22 +48,10 @@ class CrestronHomeScene(CrestronBaseEntity, Scene):
     def __init__(self, coordinator: CrestronHomeDataUpdateCoordinator, device: CrestronDevice) -> None:
         """Initialize the scene."""
         super().__init__(coordinator, device)
-        self._attr_unique_id = f"crestron_scene_{device.id}"
 
         scene_type = device.raw_data.get("sceneType", "")
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(device.id))},
-            name=device.full_name,
-            manufacturer=MANUFACTURER,
-            model=f"{MODEL} {scene_type}",
-            via_device=(DOMAIN, coordinator.client.host),
-            suggested_area=device.room,
-        )
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available (check coordinator is connected)."""
-        return self.coordinator.last_update_success
+        if scene_type:
+            self._attr_device_info["model"] = f"{MODEL} {scene_type}"
 
     async def async_activate(self, **kwargs: Any) -> None:
         """Activate the scene."""
