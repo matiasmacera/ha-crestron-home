@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_registry import RegistryEntryHider
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -144,7 +145,7 @@ class CrestronBaseEntity(CoordinatorEntity):
             entity_registry = async_get_entity_registry(self.hass)
             if entity_registry.async_get(self.entity_id):
                 entity_registry.async_update_entity(
-                    self.entity_id, hidden_by="integration"
+                    self.entity_id, hidden_by=RegistryEntryHider.INTEGRATION
                 )
 
     async def async_will_remove_from_hass(self) -> None:
@@ -165,6 +166,10 @@ class CrestronBaseEntity(CoordinatorEntity):
             self._supports_optimistic
             and time.monotonic() - self._last_command_time < OPTIMISTIC_COOLDOWN
         ):
+            # This poll's change may get consumed by device_manager's per-poll
+            # diff and never reappear in last_changed. Force one reconciliation
+            # write on the next non-cooldown update so state can't get stuck.
+            self._last_write_success = None
             return
 
         success = self.coordinator.last_update_success
