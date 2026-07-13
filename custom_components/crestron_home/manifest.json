@@ -4,7 +4,6 @@
   "codeowners": ["@matiasmacera"],
   "config_flow": true,
   "documentation": "https://github.com/matiasmacera/ha-crestron-home",
-  "homeassistant": "2024.8.0",
   "integration_type": "hub",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/matiasmacera/ha-crestron-home/issues",
